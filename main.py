@@ -77,32 +77,108 @@ RAID_WINDOW = 60
 VC_ABUSE_THRESHOLD = 5
 VC_ABUSE_WINDOW = 30
 
-# MongoDB
-try:
-    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=30000, tls=True, retryWrites=False)
-    db = client["legend_star"]
-    users_coll = db["users"]
-    todo_coll = db["todo_timestamps"]
-    redlist_coll = db["redlist"]
-    active_members_coll = db["active_members"]
-    print("✅ MongoDB connected (indexes will be created on first ready)")
-except Exception as e:
-    print(f"⚠️ MongoDB connection warning: {e}")
-    # Create collections anyway for later use
-    db = client["legend_star"]
-    users_coll = db["users"]
-    todo_coll = db["todo_timestamps"]
-    redlist_coll = db["redlist"]
-    active_members_coll = db["active_members"]
+# MongoDB Connection Handler
+db = None
+users_coll = None
+todo_coll = None
+redlist_coll = None
+active_members_coll = None
+mongo_connected = False
+
+def init_mongo():
+    """Initialize MongoDB connection with retry logic"""
+    global db, users_coll, todo_coll, redlist_coll, active_members_coll, mongo_connected
+    
+    retry_count = 0
+    max_retries = 3
+    
+    while retry_count < max_retries:
+        try:
+            # Try connection with optimized settings for SSL issues
+            client = MongoClient(
+                MONGODB_URI,
+                serverSelectionTimeoutMS=20000,
+                connectTimeoutMS=20000,
+                socketTimeoutMS=20000,
+                retryWrites=False,
+                tls=True,
+                tlsAllowInvalidCertificates=False,
+                directConnection=False
+            )
+            
+            # Test connection
+            client.admin.command('ping')
+            
+            db = client["legend_star"]
+            users_coll = db["users"]
+            todo_coll = db["todo_timestamps"]
+            redlist_coll = db["redlist"]
+            active_members_coll = db["active_members"]
+            mongo_connected = True
+            print("✅ MongoDB connected successfully (indexes will be created on ready)")
+            return True
+            
+        except Exception as e:
+            retry_count += 1
+            error_msg = str(e)
+            
+            # Check if it's an SSL error
+            if "SSL" in error_msg or "handshake" in error_msg:
+                print(f"⚠️ MongoDB SSL error (attempt {retry_count}/{max_retries}): Retrying...")
+                if retry_count < max_retries:
+                    import time
+                    time.sleep(2 ** retry_count)  # Exponential backoff
+                    continue
+            else:
+                print(f"⚠️ MongoDB connection attempt {retry_count}/{max_retries} failed: {error_msg[:100]}")
+                if retry_count < max_retries:
+                    import time
+                    time.sleep(2 ** retry_count)
+                    continue
+    
+    # Fallback: Create collections anyway (bot will continue with cached data)
+    print("⚠️ MongoDB connection failed after retries. Bot will use in-memory cache only.")
+    try:
+        client = MongoClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=10000,
+            tls=True,
+            retryWrites=False,
+            directConnection=False
+        )
+        db = client["legend_star"]
+        users_coll = db["users"]
+        todo_coll = db["todo_timestamps"]
+        redlist_coll = db["redlist"]
+        active_members_coll = db["active_members"]
+        mongo_connected = False  # Still set to False since connection is unreliable
+    except:
+        # Create dummy collections
+        mongo_connected = False
+        print("⚠️ Using in-memory collections (data may be lost on restart)")
+    
+    return mongo_connected
+
+# Initialize MongoDB on startup
+mongo_connected = init_mongo()
 
 # Function to safely create indexes
 async def create_indexes_async():
+    """Create MongoDB indexes safely with error handling"""
+    if not mongo_connected:
+        print("⏭️ Skipping index creation (MongoDB not available)")
+        return
+    
     try:
         users_coll.create_index("data.voice_cam_on_minutes")
         users_coll.create_index("data.voice_cam_off_minutes")
         print("✅ MongoDB indexes created")
     except Exception as e:
-        print(f"⚠️ Index creation failed (non-critical): {e}")
+        error_msg = str(e)
+        if "SSL" in error_msg or "handshake" in error_msg:
+            print(f"⚠️ Index creation skipped (MongoDB SSL issue): {error_msg[:80]}")
+        else:
+            print(f"⚠️ Index creation failed (non-critical): {error_msg[:100]}")
 
 
 intents = discord.Intents.all()
@@ -156,16 +232,23 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if (old_in and not new_in) or (old_in and new_in and (before.channel != after.channel or old_cam != new_cam)):
         if member.id in vc_join_times:
             mins = int((now - vc_join_times[member.id]) // 60)
-            if mins > 0:
-                field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
-                users_coll.update_one({"_id": user_id}, {"$inc": {field: mins}})
+            if mins > 0 and mongo_connected:
+                try:
+                    field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
+                    users_coll.update_one({"_id": user_id}, {"$inc": {field: mins}})
+                except Exception as e:
+                    print(f"⚠️ Failed to save VC time: {str(e)[:80]}")
             del vc_join_times[member.id]
 
     if new_in:
         vc_join_times[member.id] = now
         track_activity(member.id, f"Joined VC: {after.channel.name if after.channel else 'Unknown'}")
 
-    users_coll.update_one({"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}}, upsert=True)
+    if mongo_connected:
+        try:
+            users_coll.update_one({"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}}, upsert=True)
+        except Exception as e:
+            print(f"⚠️ Failed to initialize user: {str(e)[:80]}")
 
     # Cam enforcement
     channel = after.channel
@@ -190,27 +273,30 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
 @tasks.loop(minutes=2)
 async def batch_save_study():
-    if GUILD_ID <= 0:
+    if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
     now = time.time()
-    for uid, join in list(vc_join_times.items()):
-        member = guild.get_member(uid)
-        if not member or not member.voice or not member.voice.channel:
-            continue
-        mins = int((now - join) // 60)
-        if mins > 0:
-            cam = member.voice.self_video or member.voice.streaming
-            field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-            users_coll.update_one({"_id": str(uid)}, {"$inc": {field: mins}})
-            vc_join_times[uid] = now
+    try:
+        for uid, join in list(vc_join_times.items()):
+            member = guild.get_member(uid)
+            if not member or not member.voice or not member.voice.channel:
+                continue
+            mins = int((now - join) // 60)
+            if mins > 0:
+                cam = member.voice.self_video or member.voice.streaming
+                field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
+                users_coll.update_one({"_id": str(uid)}, {"$inc": {field: mins}})
+                vc_join_times[uid] = now
+    except Exception as e:
+        print(f"⚠️ Batch save error: {str(e)[:80]}")
 
 # ==================== LEADERBOARDS ====================
 @tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
 async def auto_leaderboard():
-    if GUILD_ID <= 0:
+    if GUILD_ID <= 0 or not mongo_connected:
         return
     guild = bot.get_guild(GUILD_ID)
     if not guild:
@@ -218,35 +304,43 @@ async def auto_leaderboard():
     channel = guild.get_channel(AUTO_LB_CHANNEL_ID)
     if not channel:
         return
-    docs = list(users_coll.find())
-    active = []
-    for doc in docs:
-        data = doc.get("data", {})
-        try:
-            m = guild.get_member(int(doc["_id"]))
-            if m:
-                active.append({"name": m.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
-        except:
-            pass
-    sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
-    sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
-    desc = "**Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data today.\n")
-    desc += "\n**Cam Off ❌**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "")
-    embed = discord.Embed(title="🌙 Daily Leaderboard", description=desc, color=0x00FF00, timestamp=datetime.datetime.now(KOLKATA))
-    embed.set_footer(text="Auto at 23:55 IST")
-    await channel.send(embed=embed)
+    try:
+        docs = list(users_coll.find())
+        active = []
+        for doc in docs:
+            data = doc.get("data", {})
+            try:
+                m = guild.get_member(int(doc["_id"]))
+                if m:
+                    active.append({"name": m.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
+            except:
+                pass
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
+        desc = "**Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data today.\n")
+        desc += "\n**Cam Off ❌**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "")
+        embed = discord.Embed(title="🌙 Daily Leaderboard", description=desc, color=0x00FF00, timestamp=datetime.datetime.now(KOLKATA))
+        embed.set_footer(text="Auto at 23:55 IST")
+        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"⚠️ Auto leaderboard error: {str(e)[:80]}")
 
 @tasks.loop(time=datetime.time(0, 0, tzinfo=KOLKATA))
 async def midnight_reset():
-    for doc in users_coll.find():
-        data = doc.get("data", {})
-        users_coll.update_one({"_id": doc["_id"]}, {"$set": {
-            "data.yesterday.cam_on": data.get("voice_cam_on_minutes", 0),
-            "data.yesterday.cam_off": data.get("voice_cam_off_minutes", 0),
-            "data.voice_cam_on_minutes": 0,
-            "data.voice_cam_off_minutes": 0
-        }})
-    print("🕛 Midnight reset complete")
+    if not mongo_connected:
+        return
+    try:
+        for doc in users_coll.find():
+            data = doc.get("data", {})
+            users_coll.update_one({"_id": doc["_id"]}, {"$set": {
+                "data.yesterday.cam_on": data.get("voice_cam_on_minutes", 0),
+                "data.yesterday.cam_off": data.get("voice_cam_off_minutes", 0),
+                "data.voice_cam_on_minutes": 0,
+                "data.voice_cam_off_minutes": 0
+            }})
+        print("🕛 Midnight reset complete")
+    except Exception as e:
+        print(f"⚠️ Midnight reset error: {str(e)[:80]}")
 
 # Leaderboard commands
 @tree.command(name="lb", description="Today’s voice + cam leaderboard", guild=GUILD)
@@ -254,6 +348,9 @@ async def midnight_reset():
 async def lb(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
+        if not mongo_connected:
+            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
+        
         docs = list(users_coll.find().limit(50))
         active = []
         # Use guild.members cache instead of fetching (faster)
@@ -275,12 +372,19 @@ async def lb(interaction: discord.Interaction):
         embed = discord.Embed(title="🏆 Study Leaderboard", description=desc, color=0xFFD700)
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        await interaction.followup.send(f"Error loading leaderboard: {str(e)[:100]}", ephemeral=True)
+        error_msg = str(e)
+        if "SSL" in error_msg or "handshake" in error_msg:
+            await interaction.followup.send("📡 Database connection issue. Please try again later.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"Error loading leaderboard: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="ylb", description="Yesterday’s leaderboard", guild=GUILD)
 async def ylb(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
+        if not mongo_connected:
+            return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
+        
         docs = list(users_coll.find({"data.yesterday": {"$exists": True}}))
         active = []
         # Use guild.members cache instead of fetching (faster)
@@ -304,7 +408,11 @@ async def ylb(interaction: discord.Interaction):
         embed = discord.Embed(title="⏮️ Yesterday Leaderboard", description=desc, color=0xA9A9A9)
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        await interaction.followup.send(f"Error loading yesterday leaderboard: {str(e)[:100]}", ephemeral=True)
+        error_msg = str(e)
+        if "SSL" in error_msg or "handshake" in error_msg:
+            await interaction.followup.send("📡 Database connection issue. Please try again later.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"Error loading yesterday leaderboard: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="mystatus", description="Your personal VC + cam stats", guild=GUILD)
 async def mystatus(interaction: discord.Interaction):
