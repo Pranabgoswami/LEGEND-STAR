@@ -31,6 +31,7 @@ import aiohttp
 from aiohttp import web
 from pymongo import MongoClient
 from dotenv import load_dotenv
+from discord.app_commands import checks
 
 load_dotenv()
 
@@ -83,7 +84,10 @@ users_coll = db["users"]
 todo_coll = db["todo_timestamps"]
 redlist_coll = db["redlist"]
 active_members_coll = db["active_members"]
+users_coll.create_index("data.voice_cam_on_minutes")
+users_coll.create_index("data.voice_cam_off_minutes")
 print("✅ MongoDB connected")
+
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -230,52 +234,74 @@ async def midnight_reset():
 
 # Leaderboard commands
 @tree.command(name="lb", description="Today’s voice + cam leaderboard", guild=GUILD)
+@checks.cooldown(1, 10)   # once per 10 sec per user
 async def lb(interaction: discord.Interaction):
     await interaction.response.defer()
-    docs = list(users_coll.find())
-    active = []
-    for doc in docs:
-        data = doc.get("data", {})
-        try:
-            m = await interaction.guild.fetch_member(int(doc["_id"]))
-            active.append({"name": m.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
-        except:
-            pass
-    sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
-    sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
-    desc = "**Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data.\n")
-    desc += "\n**Cam Off ❌**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "")
-    embed = discord.Embed(title="🏆 Study Leaderboard", description=desc, color=0xFFD700)
-    await interaction.followup.send(embed=embed)
+    try:
+        docs = list(users_coll.find().limit(50))
+        active = []
+        # Use guild.members cache instead of fetching (faster)
+        members_by_id = {m.id: m for m in interaction.guild.members}
+        for doc in docs:
+            try:
+                user_id = int(doc["_id"])
+                member = members_by_id.get(user_id)
+                if not member:
+                    continue
+                data = doc.get("data", {})
+                active.append({"name": member.display_name, "cam_on": data.get("voice_cam_on_minutes", 0), "cam_off": data.get("voice_cam_off_minutes", 0)})
+            except (ValueError, KeyError):
+                continue
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
+        desc = "**Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data.\n")
+        desc += "\n**Cam Off ❌**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "")
+        embed = discord.Embed(title="🏆 Study Leaderboard", description=desc, color=0xFFD700)
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"Error loading leaderboard: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="ylb", description="Yesterday’s leaderboard", guild=GUILD)
 async def ylb(interaction: discord.Interaction):
     await interaction.response.defer()
-    docs = list(users_coll.find({"data.yesterday": {"$exists": True}}))
-    active = []
-    for doc in docs:
-        y = doc.get("data", {}).get("yesterday", {})
-        if y.get("cam_on", 0) == 0 and y.get("cam_off", 0) == 0:
-            continue
-        try:
-            m = await interaction.guild.fetch_member(int(doc["_id"]))
-            active.append({"name": m.display_name, "cam_on": y.get("cam_on", 0), "cam_off": y.get("cam_off", 0)})
-        except:
-            pass
-    sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
-    sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
-    desc = "**Yesterday Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data.\n")
-    desc += "\n**Yesterday Cam Off ❌**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "")
-    embed = discord.Embed(title="⏮️ Yesterday Leaderboard", description=desc, color=0xA9A9A9)
-    await interaction.followup.send(embed=embed)
+    try:
+        docs = list(users_coll.find({"data.yesterday": {"$exists": True}}))
+        active = []
+        # Use guild.members cache instead of fetching (faster)
+        members_by_id = {m.id: m for m in interaction.guild.members}
+        for doc in docs:
+            try:
+                user_id = int(doc["_id"])
+                member = members_by_id.get(user_id)
+                if not member:
+                    continue
+                y = doc.get("data", {}).get("yesterday", {})
+                if y.get("cam_on", 0) == 0 and y.get("cam_off", 0) == 0:
+                    continue
+                active.append({"name": member.display_name, "cam_on": y.get("cam_on", 0), "cam_off": y.get("cam_off", 0)})
+            except (ValueError, KeyError):
+                continue
+        sorted_on = sorted(active, key=lambda x: x["cam_on"], reverse=True)[:15]
+        sorted_off = sorted(active, key=lambda x: x["cam_off"], reverse=True)[:10]
+        desc = "**Yesterday Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data.\n")
+        desc += "\n**Yesterday Cam Off ❌**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "")
+        embed = discord.Embed(title="⏮️ Yesterday Leaderboard", description=desc, color=0xA9A9A9)
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"Error loading yesterday leaderboard: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="mystatus", description="Your personal VC + cam stats", guild=GUILD)
 async def mystatus(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    doc = users_coll.find_one({"_id": str(interaction.user.id)})
+    try:
+        doc = users_coll.find_one({"_id": str(interaction.user.id)})
+    except Exception as e:
+        await interaction.followup.send(f"DB Error: {e}", ephemeral=True)
+        return
+
     if not doc or "data" not in doc:
-        return await interaction.followup.send("No stats yet.")
+        return await interaction.followup.send("No stats yet.", ephemeral=True)
 
     data = doc["data"]
     total = data.get("voice_cam_on_minutes", 0) + data.get("voice_cam_off_minutes", 0)
@@ -291,43 +317,56 @@ async def mystatus(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+
 @tree.command(name="yst", description="Your yesterday’s stats", guild=GUILD)
 async def yst(interaction: discord.Interaction):
-    doc = users_coll.find_one({"_id": str(interaction.user.id)})
-    if not doc or "data" not in doc or "yesterday" not in doc["data"]:
-        return await interaction.response.send_message("No yesterday data.", ephemeral=True)
-    y = doc["data"]["yesterday"]
-    total = y.get("cam_on", 0) + y.get("cam_off", 0)
-    embed = discord.Embed(title=f"🗓️ Yesterday Stats: {interaction.user.name}", color=0x808080)
-    embed.add_field(name="Total", value=format_time(total), inline=True)
-    embed.add_field(name="Cam On", value=format_time(y.get("cam_on", 0)), inline=True)
-    embed.add_field(name="Cam Off", value=format_time(y.get("cam_off", 0)), inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        doc = users_coll.find_one({"_id": str(interaction.user.id)})
+        if not doc or "data" not in doc or "yesterday" not in doc["data"]:
+            return await interaction.followup.send("No yesterday data.", ephemeral=True)
+        y = doc["data"]["yesterday"]
+        total = y.get("cam_on", 0) + y.get("cam_off", 0)
+        embed = discord.Embed(title=f"🗓️ Yesterday Stats: {interaction.user.name}", color=0x808080)
+        embed.add_field(name="Total", value=format_time(total), inline=True)
+        embed.add_field(name="Cam On", value=format_time(y.get("cam_on", 0)), inline=True)
+        embed.add_field(name="Cam Off", value=format_time(y.get("cam_off", 0)), inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error loading stats: {str(e)[:100]}", ephemeral=True)
 
 # ==================== REDLIST ====================
 @tree.command(name="redban", description="Ban a user & store in redlist", guild=GUILD)
 @app_commands.describe(userid="User ID")
 async def redban(interaction: discord.Interaction, userid: str):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    if not userid.isdigit():
-        return await interaction.response.send_message("Invalid ID", ephemeral=True)
-    redlist_coll.update_one({"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}}, upsert=True)
+    await interaction.response.defer(ephemeral=True)
     try:
-        await interaction.guild.ban(discord.Object(id=int(userid)), reason="Redlist")
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        if not userid.isdigit():
+            return await interaction.followup.send("Invalid ID", ephemeral=True)
+        redlist_coll.update_one({"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}}, upsert=True)
+        try:
+            await interaction.guild.ban(discord.Object(id=int(userid)), reason="Redlist")
+        except Exception as e:
+            print(f"Ban error: {e}")
+        await interaction.followup.send(f"Redlisted {userid}", ephemeral=True)
     except Exception as e:
-        print(f"Ban error: {e}")
-    await interaction.response.send_message(f"Redlisted {userid}", ephemeral=True)
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="redlist", description="Show banned / restricted users", guild=GUILD)
 async def redlist(interaction: discord.Interaction):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    ids = [doc["_id"] for doc in redlist_coll.find()]
-    if not ids:
-        return await interaction.response.send_message("Empty redlist.", ephemeral=True)
-    msg = "Redlist IDs:\n" + "\n".join(f"- {i}" for i in ids)
-    await interaction.response.send_message(msg, ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        ids = [doc["_id"] for doc in redlist_coll.find()]
+        if not ids:
+            return await interaction.followup.send("Empty redlist.", ephemeral=True)
+        msg = "Redlist IDs:\n" + "\n".join(f"- {i}" for i in ids)
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -463,151 +502,195 @@ async def todo_checker():
 
 @tree.command(name="listtodo", description="View your current todo", guild=GUILD)
 async def listtodo(interaction: discord.Interaction):
-    uid = str(interaction.user.id)
-    doc = todo_coll.find_one({"_id": uid})
-    if not doc or "todo" not in doc:
-        return await interaction.response.send_message("No current TODO.", ephemeral=True)
-    t = doc["todo"]
-    embed = discord.Embed(title="Your Current TODO", color=discord.Color.blue())
-    embed.add_field(name="Name", value=t["name"], inline=True)
-    embed.add_field(name="Date", value=t["date"], inline=True)
-    embed.add_field(name="Must Do", value=t["must_do"], inline=False)
-    embed.add_field(name="Can Do", value=t["can_do"], inline=False)
-    embed.add_field(name="Don't Do", value=t["dont_do"], inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        uid = str(interaction.user.id)
+        doc = todo_coll.find_one({"_id": uid})
+        if not doc or "todo" not in doc:
+            return await interaction.followup.send("No current TODO.", ephemeral=True)
+        t = doc["todo"]
+        embed = discord.Embed(title="Your Current TODO", color=discord.Color.blue())
+        embed.add_field(name="Name", value=t["name"], inline=True)
+        embed.add_field(name="Date", value=t["date"], inline=True)
+        embed.add_field(name="Must Do", value=t["must_do"], inline=False)
+        embed.add_field(name="Can Do", value=t["can_do"], inline=False)
+        embed.add_field(name="Don't Do", value=t["dont_do"], inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="deltodo", description="Delete your own todo", guild=GUILD)
 async def deltodo(interaction: discord.Interaction):
-    uid = str(interaction.user.id)
-    todo_coll.update_one({"_id": uid}, {"$unset": {"todo": ""}})
-    await interaction.response.send_message("TODO deleted (timer unchanged).", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        uid = str(interaction.user.id)
+        todo_coll.update_one({"_id": uid}, {"$unset": {"todo": ""}})
+        await interaction.followup.send("TODO deleted (timer unchanged).", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="todostatus", description="Check last submit time + reminder status", guild=GUILD)
 @app_commands.describe(user="Optional: Check another (Owner only)")
 async def todostatus(interaction: discord.Interaction, user: discord.Member = None):
-    if user and interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Can only check others if owner.", ephemeral=True)
-    target = user or interaction.user
-    uid = str(target.id)
-    doc = todo_coll.find_one({"_id": uid})
-    if not doc:
-        return await interaction.response.send_message("No record.", ephemeral=True)
-    elapsed = time.time() - doc.get("last_submit", 0)
-    hours = int(elapsed // 3600)
-    embed = discord.Embed(title="TODO Status", color=discord.Color.green())
-    embed.add_field(name="User", value=target.mention)
-    embed.add_field(name="Last Submit", value=f"{hours}h ago")
-    embed.add_field(name="Status", value="Safe" if elapsed < 86400 else "Pending ping")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if user and interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Can only check others if owner.", ephemeral=True)
+        target = user or interaction.user
+        uid = str(target.id)
+        doc = todo_coll.find_one({"_id": uid})
+        if not doc:
+            return await interaction.followup.send("No record.", ephemeral=True)
+        elapsed = time.time() - doc.get("last_submit", 0)
+        hours = int(elapsed // 3600)
+        embed = discord.Embed(title="TODO Status", color=discord.Color.green())
+        embed.add_field(name="User", value=target.mention)
+        embed.add_field(name="Last Submit", value=f"{hours}h ago")
+        embed.add_field(name="Status", value="Safe" if elapsed < 86400 else "Pending ping")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 # ==================== ADMIN COMMANDS ====================
 @tree.command(name="msz", description="Send announcement (Owner)", guild=GUILD)
 @app_commands.describe(channel="Target", message="Text", role="Ping (opt)", attachment="File (opt)")
 async def msz(interaction: discord.Interaction, channel: discord.TextChannel, message: str, role: discord.Role = None, attachment: discord.Attachment = None):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    content = f"📩 **Server Announcement**\n{message}"
-    if role:
-        content += f"\n<@&{role.id}>"
-    files = [await attachment.to_file()] if attachment else None
-    await channel.send(content, files=files)
-    await interaction.response.send_message("Sent!", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        content = f"📩 **Server Announcement**\n{message}"
+        if role:
+            content += f"\n<@&{role.id}>"
+        files = [await attachment.to_file()] if attachment else None
+        await channel.send(content, files=files)
+        await interaction.followup.send("Sent!", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="mz", description="Anonymous DM (Owner)", guild=GUILD)
 @app_commands.describe(target="User", message="Text", attachment="File (opt)")
 async def mz(interaction: discord.Interaction, target: discord.User, message: str, attachment: discord.Attachment = None):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    content = f"📩 **Message from Server**\n{message}"
-    files = [await attachment.to_file()] if attachment else None
+    await interaction.response.defer(ephemeral=True)
     try:
-        await target.send(content, files=files)
-        await interaction.response.send_message(f"Sent anonymously to {target}", ephemeral=True)
-    except:
-        await interaction.response.send_message("DM failed (blocked?).", ephemeral=True)
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        content = f"📩 **Message from Server**\n{message}"
+        files = [await attachment.to_file()] if attachment else None
+        try:
+            await target.send(content, files=files)
+            await interaction.followup.send(f"Sent anonymously to {target}", ephemeral=True)
+        except:
+            await interaction.followup.send("DM failed (blocked?).", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="ud", description="User details (Owner)", guild=GUILD)
 @app_commands.describe(target="User")
 async def ud(interaction: discord.Interaction, target: discord.Member):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    logs = "\n".join(user_activity[target.id] or ["No logs"])
-    embed = discord.Embed(title=f"🕵️ {target}", color=0x0099ff)
-    embed.add_field(name="ID", value=target.id)
-    embed.add_field(name="Joined", value=target.joined_at.strftime("%d/%m/%Y %H:%M") if target.joined_at else "Unknown")
-    embed.add_field(name="Recent Activity", value=f"```{logs}```", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        logs = "\n".join(user_activity[target.id] or ["No logs"])
+        embed = discord.Embed(title=f"🕵️ {target}", color=0x0099ff)
+        embed.add_field(name="ID", value=target.id)
+        embed.add_field(name="Joined", value=target.joined_at.strftime("%d/%m/%Y %H:%M") if target.joined_at else "Unknown")
+        embed.add_field(name="Recent Activity", value=f"```{logs}```", inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="bn", description="Force ban (Owner)", guild=GUILD)
 @app_commands.describe(target="ID/Mention/Name", reason="Reason (opt)")
 async def bn(interaction: discord.Interaction, target: str, reason: str = "Force Ban"):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    member = None
-    if target.isdigit():
-        try:
-            member = await interaction.guild.fetch_member(int(target))
-        except:
-            pass
-    elif target.startswith("<@"):
-        clean = target.strip("<@!>").strip(">")
-        try:
-            member = await interaction.guild.fetch_member(int(clean))
-        except:
-            pass
-    else:
-        member = discord.utils.find(lambda m: m.name == target or m.display_name == target, interaction.guild.members)
-    if member:
-        await interaction.guild.ban(member, reason=reason)
-        await interaction.response.send_message(f"Banned {member}", ephemeral=True)
-    else:
-        await interaction.response.send_message("User not found.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        member = None
+        if target.isdigit():
+            try:
+                member = await interaction.guild.fetch_member(int(target))
+            except:
+                pass
+        elif target.startswith("<@"):
+            clean = target.strip("<@!>").strip(">")
+            try:
+                member = await interaction.guild.fetch_member(int(clean))
+            except:
+                pass
+        else:
+            member = discord.utils.find(lambda m: m.name == target or m.display_name == target, interaction.guild.members)
+        if member:
+            await interaction.guild.ban(member, reason=reason)
+            await interaction.followup.send(f"Banned {member}", ephemeral=True)
+        else:
+            await interaction.followup.send("User not found.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="ck", description="Disconnect user from VC (Owner)", guild=GUILD)
 @app_commands.describe(user="Target")
 async def ck(interaction: discord.Interaction, user: discord.Member):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    if not user.voice or not user.voice.channel:
-        return await interaction.response.send_message("User not in VC.", ephemeral=True)
-    await user.move_to(None, reason="Admin kick")
-    await interaction.response.send_message(f"Disconnected {user}", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        if not user.voice or not user.voice.channel:
+            return await interaction.followup.send("User not in VC.", ephemeral=True)
+        await user.move_to(None, reason="Admin kick")
+        await interaction.followup.send(f"Disconnected {user}", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="addh", description="Allow a user to use todo system", guild=GUILD)
 @app_commands.describe(userid="User ID")
 async def addh(interaction: discord.Interaction, userid: str):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    if not userid.isdigit():
-        return await interaction.response.send_message("Invalid ID", ephemeral=True)
-    active_members_coll.update_one({"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}}, upsert=True)
-    await interaction.response.send_message(f"Added {userid} to active.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        if not userid.isdigit():
+            return await interaction.followup.send("Invalid ID", ephemeral=True)
+        active_members_coll.update_one({"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}}, upsert=True)
+        await interaction.followup.send(f"Added {userid} to active.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="remh", description="Remove a user from todo system", guild=GUILD)
 @app_commands.describe(userid="User ID")
 async def remh(interaction: discord.Interaction, userid: str):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    if not userid.isdigit():
-        return await interaction.response.send_message("Invalid ID", ephemeral=True)
-    active_members_coll.delete_one({"_id": userid})
-    await interaction.response.send_message(f"Removed {userid} from active.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        if not userid.isdigit():
+            return await interaction.followup.send("Invalid ID", ephemeral=True)
+        active_members_coll.delete_one({"_id": userid})
+        await interaction.followup.send(f"Removed {userid} from active.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 @tree.command(name="members", description="List all allowed members", guild=GUILD)
 async def members(interaction: discord.Interaction):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("Owner only", ephemeral=True)
-    ids = [doc["_id"] for doc in active_members_coll.find()]
-    if not ids:
-        return await interaction.response.send_message("No active members.", ephemeral=True)
-    guild = interaction.guild
-    names = []
-    for id_ in ids:
-        member = guild.get_member(int(id_))
-        if member:
-            names.append(member.display_name)
-    msg = "Active Members:\n" + "\n".join(f"- {n}" for n in names)
-    await interaction.response.send_message(msg, ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if interaction.user.id != OWNER_ID:
+            return await interaction.followup.send("Owner only", ephemeral=True)
+        ids = [doc["_id"] for doc in active_members_coll.find()]
+        if not ids:
+            return await interaction.followup.send("No active members.", ephemeral=True)
+        guild = interaction.guild
+        names = []
+        for id_ in ids:
+            member = guild.get_member(int(id_))
+            if member:
+                names.append(member.display_name)
+        msg = "Active Members:\n" + "\n".join(f"- {n}" for n in names)
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
 
 # ==================== SECURITY FIREWALLS ====================
 @bot.event
@@ -774,17 +857,21 @@ async def manual_sync(ctx):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    print(f"Bot ID: {bot.user.id}")
+    print(f"GUILD_ID: {GUILD_ID}")
     print(f"Commands in tree before sync: {[c.name for c in tree.get_commands(guild=GUILD if GUILD_ID > 0 else None)]}")
     try:
         if GUILD_ID > 0:
-           
+            print(f"Syncing to guild: {GUILD_ID}")
             synced = await tree.sync(guild=GUILD)
         else:
-            
+            print("Syncing globally (no GUILD_ID set)")
             synced = await tree.sync()  # global
         print(f"✅ Synced {len(synced)} commands: {[c.name for c in synced]}")
     except Exception as e:
-        print(f"Sync failed: {e}")
+        print(f"❌ Sync failed: {e}")
+        import traceback
+        traceback.print_exc()
     batch_save_study.start()
     auto_leaderboard.start()
     midnight_reset.start()
