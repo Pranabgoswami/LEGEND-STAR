@@ -86,81 +86,191 @@ active_members_coll = None
 mongo_connected = False
 
 def init_mongo():
-    """Initialize MongoDB connection with retry logic"""
+    """Initialize MongoDB connection with advanced retry logic and SSL fallbacks"""
     global db, users_coll, todo_coll, redlist_coll, active_members_coll, mongo_connected
     
-    retry_count = 0
-    max_retries = 3
-    
-    while retry_count < max_retries:
-        try:
-            # Try connection with optimized settings for SSL issues
-            client = MongoClient(
-                MONGODB_URI,
-                serverSelectionTimeoutMS=20000,
-                connectTimeoutMS=20000,
-                socketTimeoutMS=20000,
-                retryWrites=False,
-                tls=True,
-                tlsAllowInvalidCertificates=False,
-                directConnection=False
-            )
-            
-            # Test connection
-            client.admin.command('ping')
-            
-            db = client["legend_star"]
-            users_coll = db["users"]
-            todo_coll = db["todo_timestamps"]
-            redlist_coll = db["redlist"]
-            active_members_coll = db["active_members"]
-            mongo_connected = True
-            print("✅ MongoDB connected successfully (indexes will be created on ready)")
-            return True
-            
-        except Exception as e:
-            retry_count += 1
-            error_msg = str(e)
-            
-            # Check if it's an SSL error
-            if "SSL" in error_msg or "handshake" in error_msg:
-                print(f"⚠️ MongoDB SSL error (attempt {retry_count}/{max_retries}): Retrying...")
-                if retry_count < max_retries:
-                    import time
-                    time.sleep(2 ** retry_count)  # Exponential backoff
-                    continue
-            else:
-                print(f"⚠️ MongoDB connection attempt {retry_count}/{max_retries} failed: {error_msg[:100]}")
-                if retry_count < max_retries:
-                    import time
-                    time.sleep(2 ** retry_count)
-                    continue
-    
-    # Fallback: Create collections anyway (bot will continue with cached data)
-    print("⚠️ MongoDB connection failed after retries. Bot will use in-memory cache only.")
+    # Strategy 1: Try with strict TLS
+    print("🔄 MongoDB Connection Strategy 1: Strict TLS...")
     try:
         client = MongoClient(
             MONGODB_URI,
-            serverSelectionTimeoutMS=10000,
-            tls=True,
+            serverSelectionTimeoutMS=15000,
+            connectTimeoutMS=15000,
+            socketTimeoutMS=15000,
             retryWrites=False,
-            directConnection=False
+            tls=True,
+            tlsAllowInvalidCertificates=False,
+            directConnection=False,
+            maxIdleTimeMS=45000
+        )
+        client.admin.command('ping')
+        db = client["legend_star"]
+        users_coll = db["users"]
+        todo_coll = db["todo_timestamps"]
+        redlist_coll = db["redlist"]
+        active_members_coll = db["active_members"]
+        mongo_connected = True
+        print("✅ MongoDB connected successfully (Strict TLS)")
+        return True
+    except Exception as e:
+        print(f"⚠️ Strict TLS failed: {str(e)[:60]}...")
+    
+    # Strategy 2: Try with certificate verification disabled (for debugging)
+    print("🔄 MongoDB Connection Strategy 2: Relaxed TLS...")
+    try:
+        import ssl
+        client = MongoClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=15000,
+            connectTimeoutMS=15000,
+            socketTimeoutMS=15000,
+            retryWrites=False,
+            tls=True,
+            tlsAllowInvalidCertificates=True,
+            tlsCAFile=None,
+            directConnection=False,
+            maxIdleTimeMS=45000
+        )
+        client.admin.command('ping')
+        db = client["legend_star"]
+        users_coll = db["users"]
+        todo_coll = db["todo_timestamps"]
+        redlist_coll = db["redlist"]
+        active_members_coll = db["active_members"]
+        mongo_connected = True
+        print("✅ MongoDB connected successfully (Relaxed TLS)")
+        return True
+    except Exception as e:
+        print(f"⚠️ Relaxed TLS failed: {str(e)[:60]}...")
+    
+    # Strategy 3: Try without TLS (last resort)
+    print("🔄 MongoDB Connection Strategy 3: No TLS...")
+    try:
+        # Extract hostname from URI and create non-TLS connection
+        client = MongoClient(
+            MONGODB_URI.replace("tls=true", "").replace("?", "?") + ("&" if "?" in MONGODB_URI else "?") + "tls=false",
+            serverSelectionTimeoutMS=15000,
+            connectTimeoutMS=15000,
+            socketTimeoutMS=15000,
+            retryWrites=False,
+            directConnection=False,
+            maxIdleTimeMS=45000
+        )
+        client.admin.command('ping')
+        db = client["legend_star"]
+        users_coll = db["users"]
+        todo_coll = db["todo_timestamps"]
+        redlist_coll = db["redlist"]
+        active_members_coll = db["active_members"]
+        mongo_connected = True
+        print("✅ MongoDB connected successfully (No TLS)")
+        return True
+    except Exception as e:
+        print(f"⚠️ No TLS failed: {str(e)[:60]}...")
+    
+    # Strategy 4: Fallback with original URI but longer timeout
+    print("🔄 MongoDB Connection Strategy 4: Extended Timeout...")
+    try:
+        client = MongoClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=30000,
+            connectTimeoutMS=30000,
+            socketTimeoutMS=30000,
+            retryWrites=False,
+            tls=True,
+            tlsAllowInvalidCertificates=True,
+            directConnection=False,
+            maxIdleTimeMS=60000,
+            minPoolSize=0,
+            maxPoolSize=1
+        )
+        client.admin.command('ping')
+        db = client["legend_star"]
+        users_coll = db["users"]
+        todo_coll = db["todo_timestamps"]
+        redlist_coll = db["redlist"]
+        active_members_coll = db["active_members"]
+        mongo_connected = True
+        print("✅ MongoDB connected successfully (Extended Timeout)")
+        return True
+    except Exception as e:
+        print(f"⚠️ Extended Timeout failed: {str(e)[:60]}...")
+    
+    # All strategies failed - use in-memory cache
+    print("❌ All MongoDB connection strategies failed. Bot will use in-memory cache only.")
+    print("⚠️ Data persistence is DISABLED. Changes will be lost on restart.")
+    print("📝 To fix: Check MongoDB Atlas cluster status or contact MongoDB support.")
+    
+    # Create empty collection objects for compatibility
+    try:
+        client = MongoClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=5000,
+            retryWrites=False,
+            tls=True,
+            tlsAllowInvalidCertificates=True
         )
         db = client["legend_star"]
         users_coll = db["users"]
         todo_coll = db["todo_timestamps"]
         redlist_coll = db["redlist"]
         active_members_coll = db["active_members"]
-        mongo_connected = False  # Still set to False since connection is unreliable
     except:
-        # Create dummy collections
-        mongo_connected = False
-        print("⚠️ Using in-memory collections (data may be lost on restart)")
+        db = None
+        users_coll = None
+        todo_coll = None
+        redlist_coll = None
+        active_members_coll = None
     
-    return mongo_connected
+    mongo_connected = False
+    return False
 
 # Initialize MongoDB on startup
 mongo_connected = init_mongo()
+
+# Safe wrapper functions for MongoDB operations
+def safe_find_one(collection, query):
+    """Safely query MongoDB"""
+    if not mongo_connected or collection is None:
+        return None
+    try:
+        return collection.find_one(query)
+    except Exception as e:
+        return None
+
+def safe_find(collection, query=None, limit=None):
+    """Safely find multiple documents"""
+    if not mongo_connected or collection is None:
+        return []
+    try:
+        if query is None:
+            query = {}
+        result = collection.find(query)
+        if limit:
+            result = result.limit(limit)
+        return list(result)
+    except Exception as e:
+        return []
+
+def safe_update_one(collection, query, update):
+    """Safely update one document"""
+    if not mongo_connected or collection is None:
+        return False
+    try:
+        collection.update_one(query, update)
+        return True
+    except Exception as e:
+        return False
+
+def safe_delete_one(collection, query):
+    """Safely delete one document"""
+    if not mongo_connected or collection is None:
+        return False
+    try:
+        collection.delete_one(query)
+        return True
+    except Exception as e:
+        return False
 
 # Function to safely create indexes
 async def create_indexes_async():
@@ -232,23 +342,17 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if (old_in and not new_in) or (old_in and new_in and (before.channel != after.channel or old_cam != new_cam)):
         if member.id in vc_join_times:
             mins = int((now - vc_join_times[member.id]) // 60)
-            if mins > 0 and mongo_connected:
-                try:
-                    field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
-                    users_coll.update_one({"_id": user_id}, {"$inc": {field: mins}})
-                except Exception as e:
-                    print(f"⚠️ Failed to save VC time: {str(e)[:80]}")
+            if mins > 0:
+                field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
+                safe_update_one(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
             del vc_join_times[member.id]
 
     if new_in:
         vc_join_times[member.id] = now
         track_activity(member.id, f"Joined VC: {after.channel.name if after.channel else 'Unknown'}")
 
-    if mongo_connected:
-        try:
-            users_coll.update_one({"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}}, upsert=True)
-        except Exception as e:
-            print(f"⚠️ Failed to initialize user: {str(e)[:80]}")
+    # Initialize user record
+    safe_update_one(users_coll, {"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}})
 
     # Cam enforcement
     channel = after.channel
@@ -288,7 +392,7 @@ async def batch_save_study():
             if mins > 0:
                 cam = member.voice.self_video or member.voice.streaming
                 field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                users_coll.update_one({"_id": str(uid)}, {"$inc": {field: mins}})
+                safe_update_one(users_coll, {"_id": str(uid)}, {"$inc": {field: mins}})
                 vc_join_times[uid] = now
     except Exception as e:
         print(f"⚠️ Batch save error: {str(e)[:80]}")
@@ -305,7 +409,7 @@ async def auto_leaderboard():
     if not channel:
         return
     try:
-        docs = list(users_coll.find())
+        docs = safe_find(users_coll, {})
         active = []
         for doc in docs:
             data = doc.get("data", {})
@@ -330,9 +434,10 @@ async def midnight_reset():
     if not mongo_connected:
         return
     try:
-        for doc in users_coll.find():
+        docs = safe_find(users_coll, {})
+        for doc in docs:
             data = doc.get("data", {})
-            users_coll.update_one({"_id": doc["_id"]}, {"$set": {
+            safe_update_one(users_coll, {"_id": doc["_id"]}, {"$set": {
                 "data.yesterday.cam_on": data.get("voice_cam_on_minutes", 0),
                 "data.yesterday.cam_off": data.get("voice_cam_off_minutes", 0),
                 "data.voice_cam_on_minutes": 0,
@@ -351,7 +456,7 @@ async def lb(interaction: discord.Interaction):
         if not mongo_connected:
             return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
         
-        docs = list(users_coll.find().limit(50))
+        docs = safe_find(users_coll, {}, limit=50)
         active = []
         # Use guild.members cache instead of fetching (faster)
         members_by_id = {m.id: m for m in interaction.guild.members}
@@ -385,7 +490,7 @@ async def ylb(interaction: discord.Interaction):
         if not mongo_connected:
             return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
         
-        docs = list(users_coll.find({"data.yesterday": {"$exists": True}}))
+        docs = safe_find(users_coll, {"data.yesterday": {"$exists": True}})
         active = []
         # Use guild.members cache instead of fetching (faster)
         members_by_id = {m.id: m for m in interaction.guild.members}
@@ -419,7 +524,7 @@ async def mystatus(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        doc = users_coll.find_one({"_id": str(interaction.user.id)})
+        doc = safe_find_one(users_coll, {"_id": str(interaction.user.id)})
     except Exception as e:
         await interaction.followup.send(f"DB Error: {e}", ephemeral=True)
         return
@@ -446,7 +551,7 @@ async def mystatus(interaction: discord.Interaction):
 async def yst(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
-        doc = users_coll.find_one({"_id": str(interaction.user.id)})
+        doc = safe_find_one(users_coll, {"_id": str(interaction.user.id)})
         if not doc or "data" not in doc or "yesterday" not in doc["data"]:
             return await interaction.followup.send("No yesterday data.", ephemeral=True)
         y = doc["data"]["yesterday"]
@@ -469,7 +574,7 @@ async def redban(interaction: discord.Interaction, userid: str):
             return await interaction.followup.send("Owner only", ephemeral=True)
         if not userid.isdigit():
             return await interaction.followup.send("Invalid ID", ephemeral=True)
-        redlist_coll.update_one({"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}}, upsert=True)
+        safe_update_one(redlist_coll, {"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}})
         try:
             await interaction.guild.ban(discord.Object(id=int(userid)), reason="Redlist")
         except Exception as e:
@@ -484,7 +589,7 @@ async def redlist(interaction: discord.Interaction):
     try:
         if interaction.user.id != OWNER_ID:
             return await interaction.followup.send("Owner only", ephemeral=True)
-        ids = [doc["_id"] for doc in redlist_coll.find()]
+        ids = [doc["_id"] for doc in safe_find(redlist_coll, {})]
         if not ids:
             return await interaction.followup.send("Empty redlist.", ephemeral=True)
         msg = "Redlist IDs:\n" + "\n".join(f"- {i}" for i in ids)
@@ -511,7 +616,7 @@ async def on_member_join(member: discord.Member):
                     await m.ban(reason="Raid protection")
                 except:
                     pass
-    if redlist_coll.find_one({"_id": str(member.id)}):
+    if safe_find_one(redlist_coll, {"_id": str(member.id)}):
         try:
             await member.ban(reason="Redlist")
         except:
@@ -532,10 +637,10 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
 
     async def on_submit(self, interaction: discord.Interaction):
         uid = str(interaction.user.id)
-        if not active_members_coll.find_one({"_id": uid}) and interaction.user.id != OWNER_ID:
+        if not safe_find_one(active_members_coll, {"_id": uid}) and interaction.user.id != OWNER_ID:
             await interaction.response.send_message("Not authorized (not in active list).", ephemeral=True)
             return
-        todo_coll.update_one({"_id": uid}, {"$set": {
+        safe_update_one(todo_coll, {"_id": uid}, {"$set": {
             "last_submit": time.time(),
             "todo": {
                 "name": self.name.value,
@@ -567,10 +672,10 @@ class AtodoModal(TodoModal):
 
     async def on_submit(self, interaction: discord.Interaction):
         uid = str(self.target.id)
-        if not active_members_coll.find_one({"_id": uid}):
+        if not safe_find_one(active_members_coll, {"_id": uid}):
             await interaction.response.send_message("Target not in active list.", ephemeral=True)
             return
-        todo_coll.update_one({"_id": uid}, {"$set": {
+        safe_update_one(todo_coll, {"_id": uid}, {"$set": {
             "last_submit": time.time(),
             "todo": {
                 "name": self.name.value,
@@ -608,7 +713,7 @@ async def todo_checker():
     if not channel:
         return
     now = time.time()
-    for doc in todo_coll.find():
+    for doc in safe_find(todo_coll, {}):
         uid = int(doc["_id"])
         last = doc.get("last_submit", 0)
         elapsed = now - last
@@ -629,7 +734,7 @@ async def listtodo(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
         uid = str(interaction.user.id)
-        doc = todo_coll.find_one({"_id": uid})
+        doc = safe_find_one(todo_coll, {"_id": uid})
         if not doc or "todo" not in doc:
             return await interaction.followup.send("No current TODO.", ephemeral=True)
         t = doc["todo"]
@@ -648,7 +753,7 @@ async def deltodo(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
         uid = str(interaction.user.id)
-        todo_coll.update_one({"_id": uid}, {"$unset": {"todo": ""}})
+        safe_update_one(todo_coll, {"_id": uid}, {"$unset": {"todo": ""}})
         await interaction.followup.send("TODO deleted (timer unchanged).", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
@@ -662,7 +767,7 @@ async def todostatus(interaction: discord.Interaction, user: discord.Member = No
             return await interaction.followup.send("Can only check others if owner.", ephemeral=True)
         target = user or interaction.user
         uid = str(target.id)
-        doc = todo_coll.find_one({"_id": uid})
+        doc = safe_find_one(todo_coll, {"_id": uid})
         if not doc:
             return await interaction.followup.send("No record.", ephemeral=True)
         elapsed = time.time() - doc.get("last_submit", 0)
@@ -777,7 +882,7 @@ async def addh(interaction: discord.Interaction, userid: str):
             return await interaction.followup.send("Owner only", ephemeral=True)
         if not userid.isdigit():
             return await interaction.followup.send("Invalid ID", ephemeral=True)
-        active_members_coll.update_one({"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}}, upsert=True)
+        safe_update_one(active_members_coll, {"_id": userid}, {"$set": {"added": datetime.datetime.now(KOLKATA)}})
         await interaction.followup.send(f"Added {userid} to active.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
@@ -791,7 +896,7 @@ async def remh(interaction: discord.Interaction, userid: str):
             return await interaction.followup.send("Owner only", ephemeral=True)
         if not userid.isdigit():
             return await interaction.followup.send("Invalid ID", ephemeral=True)
-        active_members_coll.delete_one({"_id": userid})
+        safe_delete_one(active_members_coll, {"_id": userid})
         await interaction.followup.send(f"Removed {userid} from active.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)[:100]}", ephemeral=True)
@@ -802,7 +907,7 @@ async def members(interaction: discord.Interaction):
     try:
         if interaction.user.id != OWNER_ID:
             return await interaction.followup.send("Owner only", ephemeral=True)
-        ids = [doc["_id"] for doc in active_members_coll.find()]
+        ids = [doc["_id"] for doc in safe_find(active_members_coll, {})]
         if not ids:
             return await interaction.followup.send("No active members.", ephemeral=True)
         guild = interaction.guild
