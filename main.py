@@ -103,28 +103,19 @@ def init_mongo():
     """Initialize MongoDB connection with advanced retry logic and SSL fallbacks"""
     global db, users_coll, todo_coll, redlist_coll, active_members_coll, mongo_connected
     
-    import ssl
-    
     print(f"📡 Attempting to connect to MongoDB: {MONGODB_URI[:50]}...")
     
-    # Strategy 1: Try with relaxed TLS and specific SSL context (handles MongoDB Atlas)
-    print("🔄 MongoDB Connection Strategy 1: Relaxed TLS with Custom SSL Context...")
+    # Strategy 1: Try with SRV and relaxed TLS
+    print("🔄 MongoDB Connection Strategy 1: SRV with Relaxed TLS...")
     try:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
         client = MongoClient(
             MONGODB_URI,
             serverSelectionTimeoutMS=20000,
             connectTimeoutMS=20000,
             socketTimeoutMS=20000,
-            tlsCAFile=None,
             tlsAllowInvalidCertificates=True,
-            directConnection=False,
-            maxIdleTimeMS=45000,
             retryWrites=True,
-            ssl_context=ssl_context
+            directConnection=False
         )
         client.admin.command('ping')
         db = client["legend_star"]
@@ -133,28 +124,22 @@ def init_mongo():
         redlist_coll = db["redlist"]
         active_members_coll = db["active_members"]
         mongo_connected = True
-        print("✅ MongoDB connected successfully (Custom SSL Context)")
+        print("✅ MongoDB connected successfully (SRV + Relaxed TLS)")
         return True
     except Exception as e:
         print(f"⚠️ Strategy 1 failed: {str(e)[:100]}...")
     
-    # Strategy 2: Try with retryWrites disabled (may help with Atlas)
-    print("🔄 MongoDB Connection Strategy 2: Relaxed TLS without Retry Writes...")
+    # Strategy 2: Try with retryWrites disabled
+    print("🔄 MongoDB Connection Strategy 2: SRV without Retry Writes...")
     try:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
         client = MongoClient(
             MONGODB_URI,
             serverSelectionTimeoutMS=20000,
             connectTimeoutMS=20000,
             socketTimeoutMS=20000,
             tlsAllowInvalidCertificates=True,
-            directConnection=False,
-            maxIdleTimeMS=45000,
             retryWrites=False,
-            ssl_context=ssl_context
+            directConnection=False
         )
         client.admin.command('ping')
         db = client["legend_star"]
@@ -163,31 +148,22 @@ def init_mongo():
         redlist_coll = db["redlist"]
         active_members_coll = db["active_members"]
         mongo_connected = True
-        print("✅ MongoDB connected successfully (Relaxed TLS, No Retry Writes)")
+        print("✅ MongoDB connected successfully (SRV, No Retry Writes)")
         return True
     except Exception as e:
         print(f"⚠️ Strategy 2 failed: {str(e)[:100]}...")
     
-    # Strategy 3: Try with Direct Connection (bypass SRV)
-    print("🔄 MongoDB Connection Strategy 3: Direct Connection (bypass SRV)...")
+    # Strategy 3: Try without SSL/TLS (last resort)
+    print("🔄 MongoDB Connection Strategy 3: No TLS/SSL...")
     try:
-        # Try converting SRV to direct connection
-        direct_uri = MONGODB_URI.replace("+srv", "").replace("mongodb+", "mongodb://")
-        
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
         client = MongoClient(
-            direct_uri,
+            MONGODB_URI,
             serverSelectionTimeoutMS=20000,
             connectTimeoutMS=20000,
             socketTimeoutMS=20000,
-            tlsAllowInvalidCertificates=True,
-            directConnection=True,
-            maxIdleTimeMS=45000,
+            ssl=False,
             retryWrites=False,
-            ssl_context=ssl_context
+            directConnection=False
         )
         client.admin.command('ping')
         db = client["legend_star"]
@@ -196,30 +172,25 @@ def init_mongo():
         redlist_coll = db["redlist"]
         active_members_coll = db["active_members"]
         mongo_connected = True
-        print("✅ MongoDB connected successfully (Direct Connection)")
+        print("✅ MongoDB connected successfully (No TLS/SSL)")
         return True
     except Exception as e:
         print(f"⚠️ Strategy 3 failed: {str(e)[:100]}...")
     
-    # Strategy 4: Extended timeout with minimal parameters
-    print("🔄 MongoDB Connection Strategy 4: Extended Timeout (minimal params)...")
+    # Strategy 4: Extended timeout with maxPoolSize=1
+    print("🔄 MongoDB Connection Strategy 4: Extended Timeout (Single Pool)...")
     try:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
         client = MongoClient(
             MONGODB_URI,
             serverSelectionTimeoutMS=60000,
             connectTimeoutMS=60000,
             socketTimeoutMS=60000,
             tlsAllowInvalidCertificates=True,
-            directConnection=False,
-            maxIdleTimeMS=90000,
             retryWrites=False,
+            directConnection=False,
             maxPoolSize=1,
             minPoolSize=0,
-            ssl_context=ssl_context
+            maxIdleTimeMS=90000
         )
         client.admin.command('ping')
         db = client["legend_star"]
@@ -242,16 +213,11 @@ def init_mongo():
     
     # Create empty collection objects for compatibility
     try:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
         client = MongoClient(
             MONGODB_URI,
             serverSelectionTimeoutMS=5000,
             tlsAllowInvalidCertificates=True,
-            retryWrites=False,
-            ssl_context=ssl_context
+            retryWrites=False
         )
         db = client["legend_star"]
         users_coll = db["users"]
