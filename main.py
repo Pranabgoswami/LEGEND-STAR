@@ -752,10 +752,10 @@ async def manual_sync(ctx):
         return
     try:
         if GUILD:
-            tree.clear_commands(guild=GUILD)
+            
             synced = await tree.sync(guild=GUILD)
         else:
-            tree.clear_commands(guild=None)
+            
             synced = await tree.sync()
         await ctx.send(f"Synced {len(synced)} commands: {[c.name for c in synced]}")
     except Exception as e:
@@ -768,10 +768,10 @@ async def on_ready():
     print(f"Commands in tree before sync: {[c.name for c in tree.get_commands(guild=GUILD if GUILD_ID > 0 else None)]}")
     try:
         if GUILD_ID > 0:
-            tree.clear_commands(guild=GUILD)
+           
             synced = await tree.sync(guild=GUILD)
         else:
-            tree.clear_commands(guild=None)
+            
             synced = await tree.sync()  # global
         print(f"✅ Synced {len(synced)} commands: {[c.name for c in synced]}")
     except Exception as e:
