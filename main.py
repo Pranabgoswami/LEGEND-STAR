@@ -266,9 +266,13 @@ def safe_update_one(collection, query, update):
     if not mongo_connected or collection is None:
         return False
     try:
-        collection.update_one(query, update)
+        result = collection.update_one(query, update)
+        if result.modified_count > 0 or result.upserted_id:
+            return True
+        # Document may not exist yet, that's okay
         return True
     except Exception as e:
+        print(f"⚠️ MongoDB update error: {str(e)[:100]}")
         return False
 
 def safe_delete_one(collection, query):
@@ -336,6 +340,9 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     old_cam = before.self_video or before.streaming
     new_cam = after.self_video or after.streaming
 
+    # Initialize user record first
+    safe_update_one(users_coll, {"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "message_count": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}})
+
     # VC abuse check
     if before.channel != after.channel:
         vc_cache[member.id].append(now)
@@ -348,20 +355,21 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             except:
                 pass
 
+    # Save voice time when leaving or changing settings
     if (old_in and not new_in) or (old_in and new_in and (before.channel != after.channel or old_cam != new_cam)):
         if member.id in vc_join_times:
             mins = int((now - vc_join_times[member.id]) // 60)
             if mins > 0:
                 field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
-                safe_update_one(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
+                result = safe_update_one(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
+                print(f"💾 Saved {mins}m to {field} for {member.display_name} - Success: {result}")
             del vc_join_times[member.id]
 
+    # Track when user joins VC
     if new_in:
         vc_join_times[member.id] = now
         track_activity(member.id, f"Joined VC: {after.channel.name if after.channel else 'Unknown'}")
-
-    # Initialize user record
-    safe_update_one(users_coll, {"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}})
+        print(f"🎤 {member.display_name} joined VC - tracking started")
 
     # Cam enforcement
     channel = after.channel
@@ -401,10 +409,12 @@ async def batch_save_study():
             if mins > 0:
                 cam = member.voice.self_video or member.voice.streaming
                 field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                safe_update_one(users_coll, {"_id": str(uid)}, {"$inc": {field: mins}})
+                result = safe_update_one(users_coll, {"_id": str(uid)}, {"$inc": {field: mins}})
+                if result:
+                    print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam})")
                 vc_join_times[uid] = now
     except Exception as e:
-        print(f"⚠️ Batch save error: {str(e)[:80]}")
+        print(f"⚠️ Batch save error: {str(e)[:100]}")
 
 # ==================== LEADERBOARDS ====================
 @tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
@@ -836,6 +846,10 @@ async def ud(interaction: discord.Interaction, target: discord.Member):
         # Fetch MongoDB data
         user_doc = safe_find_one(users_coll, {"_id": user_id})
         data = user_doc.get("data", {}) if user_doc else {}
+        
+        print(f"🔍 /ud query for {target.display_name} (ID: {user_id})")
+        print(f"   MongoDB document: {user_doc}")
+        print(f"   Data fields: {data}")
         
         # Get in-memory activity logs
         logs = "\n".join(user_activity[target.id] or ["No logs"])
