@@ -38,9 +38,23 @@ load_dotenv()
 # ==================== CONFIG ====================
 TOKEN = os.getenv("DISCORD_TOKEN")
 CLIENT_ID = os.getenv("CLIENT_ID")
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))  # SET THIS IN .env TO YOUR SERVER ID!
+GUILD_ID_STR = os.getenv("GUILD_ID", "0")
 MONGODB_URI = os.getenv("MONGODB_URI")
 OWNER_ID = 1406313503278764174
+
+# Validate required environment variables
+if not TOKEN:
+    raise ValueError("❌ DISCORD_TOKEN is not set in .env file")
+if not CLIENT_ID:
+    raise ValueError("❌ CLIENT_ID is not set in .env file")
+if not MONGODB_URI:
+    raise ValueError("❌ MONGODB_URI is not set in .env file")
+
+try:
+    GUILD_ID = int(GUILD_ID_STR)
+except ValueError:
+    print(f"❌ Invalid GUILD_ID '{GUILD_ID_STR}' - must be a number. Using 0 for global sync.")
+    GUILD_ID = 0
 TECH_CHANNEL_ID = 1458142927619362969
 KOLKATA = pytz.timezone("Asia/Kolkata")
 AUTO_LB_CHANNEL_ID = 1455385042044846242
@@ -89,6 +103,8 @@ def init_mongo():
     """Initialize MongoDB connection with advanced retry logic and SSL fallbacks"""
     global db, users_coll, todo_coll, redlist_coll, active_members_coll, mongo_connected
     
+    print(f"📡 Attempting to connect to MongoDB: {MONGODB_URI[:50]}...")
+    
     # Strategy 1: Try with strict TLS
     print("🔄 MongoDB Connection Strategy 1: Strict TLS...")
     try:
@@ -97,7 +113,7 @@ def init_mongo():
             serverSelectionTimeoutMS=15000,
             connectTimeoutMS=15000,
             socketTimeoutMS=15000,
-            retryWrites=False,
+            retryWrites=True,
             tls=True,
             tlsAllowInvalidCertificates=False,
             directConnection=False,
@@ -113,7 +129,7 @@ def init_mongo():
         print("✅ MongoDB connected successfully (Strict TLS)")
         return True
     except Exception as e:
-        print(f"⚠️ Strict TLS failed: {str(e)[:60]}...")
+        print(f"⚠️ Strict TLS failed: {str(e)[:100]}...")
     
     # Strategy 2: Try with certificate verification disabled (for debugging)
     print("🔄 MongoDB Connection Strategy 2: Relaxed TLS...")
@@ -124,7 +140,7 @@ def init_mongo():
             serverSelectionTimeoutMS=15000,
             connectTimeoutMS=15000,
             socketTimeoutMS=15000,
-            retryWrites=False,
+            retryWrites=True,
             tls=True,
             tlsAllowInvalidCertificates=True,
             tlsCAFile=None,
@@ -141,7 +157,7 @@ def init_mongo():
         print("✅ MongoDB connected successfully (Relaxed TLS)")
         return True
     except Exception as e:
-        print(f"⚠️ Relaxed TLS failed: {str(e)[:60]}...")
+        print(f"⚠️ Relaxed TLS failed: {str(e)[:100]}...")
     
     # Strategy 3: Try without TLS (last resort)
     print("🔄 MongoDB Connection Strategy 3: No TLS...")
@@ -152,7 +168,7 @@ def init_mongo():
             serverSelectionTimeoutMS=15000,
             connectTimeoutMS=15000,
             socketTimeoutMS=15000,
-            retryWrites=False,
+            retryWrites=True,
             directConnection=False,
             maxIdleTimeMS=45000
         )
@@ -166,7 +182,7 @@ def init_mongo():
         print("✅ MongoDB connected successfully (No TLS)")
         return True
     except Exception as e:
-        print(f"⚠️ No TLS failed: {str(e)[:60]}...")
+        print(f"⚠️ No TLS failed: {str(e)[:100]}...")
     
     # Strategy 4: Fallback with original URI but longer timeout
     print("🔄 MongoDB Connection Strategy 4: Extended Timeout...")
@@ -176,7 +192,7 @@ def init_mongo():
             serverSelectionTimeoutMS=30000,
             connectTimeoutMS=30000,
             socketTimeoutMS=30000,
-            retryWrites=False,
+            retryWrites=True,
             tls=True,
             tlsAllowInvalidCertificates=True,
             directConnection=False,
@@ -194,7 +210,7 @@ def init_mongo():
         print("✅ MongoDB connected successfully (Extended Timeout)")
         return True
     except Exception as e:
-        print(f"⚠️ Extended Timeout failed: {str(e)[:60]}...")
+        print(f"⚠️ Extended Timeout failed: {str(e)[:100]}...")
     
     # All strategies failed - use in-memory cache
     print("❌ All MongoDB connection strategies failed. Bot will use in-memory cache only.")
@@ -206,7 +222,7 @@ def init_mongo():
         client = MongoClient(
             MONGODB_URI,
             serverSelectionTimeoutMS=5000,
-            retryWrites=False,
+            retryWrites=True,
             tls=True,
             tlsAllowInvalidCertificates=True
         )
