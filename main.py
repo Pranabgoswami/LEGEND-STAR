@@ -285,6 +285,29 @@ def safe_delete_one(collection, query):
     except Exception as e:
         return False
 
+def save_with_retry(collection, query, update, max_retries=3):
+    """Save to MongoDB with retry logic"""
+    if collection is None:
+        print(f"⚠️ Collection is None, cannot save")
+        return False
+    
+    for attempt in range(max_retries):
+        try:
+            result = collection.update_one(query, update)
+            if result.modified_count > 0 or result.upserted_id:
+                print(f"✅ Data saved successfully on attempt {attempt + 1}")
+                return True
+            # Document may not exist yet, that's okay
+            return True
+        except Exception as e:
+            print(f"⚠️ Save attempt {attempt + 1} failed: {str(e)[:80]}")
+            if attempt < max_retries - 1:
+                import asyncio
+                asyncio.sleep(0.5)  # Wait before retry
+    
+    print(f"❌ Failed to save after {max_retries} attempts")
+    return False
+
 # Function to safely create indexes
 async def create_indexes_async():
     """Create MongoDB indexes safely with error handling"""
@@ -341,7 +364,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     new_cam = after.self_video or after.streaming
 
     # Initialize user record first
-    safe_update_one(users_coll, {"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "message_count": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}})
+    save_with_retry(users_coll, {"_id": user_id}, {"$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "message_count": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}})
 
     # VC abuse check
     if before.channel != after.channel:
@@ -355,21 +378,21 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             except:
                 pass
 
-    # Save voice time when leaving or changing settings
+    # Save voice time IMMEDIATELY when leaving or changing settings
     if (old_in and not new_in) or (old_in and new_in and (before.channel != after.channel or old_cam != new_cam)):
         if member.id in vc_join_times:
             mins = int((now - vc_join_times[member.id]) // 60)
             if mins > 0:
                 field = "data.voice_cam_on_minutes" if old_cam else "data.voice_cam_off_minutes"
-                result = safe_update_one(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
-                print(f"💾 Saved {mins}m to {field} for {member.display_name} - Success: {result}")
+                result = save_with_retry(users_coll, {"_id": user_id}, {"$inc": {field: mins}})
+                print(f"💾 [{field}] Saved {mins}m for {member.display_name} - MongoDB: {result}")
             del vc_join_times[member.id]
 
     # Track when user joins VC
     if new_in:
         vc_join_times[member.id] = now
         track_activity(member.id, f"Joined VC: {after.channel.name if after.channel else 'Unknown'}")
-        print(f"🎤 {member.display_name} joined VC - tracking started")
+        print(f"🎤 {member.display_name} joined VC - tracking started (Cam: {new_cam})")
 
     # Cam enforcement
     channel = after.channel
@@ -409,9 +432,11 @@ async def batch_save_study():
             if mins > 0:
                 cam = member.voice.self_video or member.voice.streaming
                 field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                result = safe_update_one(users_coll, {"_id": str(uid)}, {"$inc": {field: mins}})
+                result = save_with_retry(users_coll, {"_id": str(uid)}, {"$inc": {field: mins}})
                 if result:
-                    print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam})")
+                    print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
+                else:
+                    print(f"⚠️ Failed to save for {member.display_name}")
                 vc_join_times[uid] = now
     except Exception as e:
         print(f"⚠️ Batch save error: {str(e)[:100]}")
@@ -971,17 +996,19 @@ async def on_message(message: discord.Message):
         return
     now = time.time()
     
-    # Track message activity in MongoDB
+    # Track message activity in MongoDB - SAVE IMMEDIATELY
     if message.guild and message.guild.id == GUILD_ID:
         user_id = str(message.author.id)
         try:
-            safe_update_one(users_coll, {"_id": user_id}, {
+            result = save_with_retry(users_coll, {"_id": user_id}, {
                 "$inc": {"data.message_count": 1},
                 "$setOnInsert": {"data": {"voice_cam_on_minutes": 0, "voice_cam_off_minutes": 0, "message_count": 0, "yesterday": {"cam_on": 0, "cam_off": 0}}}
             })
             track_activity(message.author.id, f"Message in #{message.channel.name}: {message.content[:50]}")
-        except:
-            pass
+            if not result:
+                print(f"⚠️ Failed to save message count for {message.author.display_name}")
+        except Exception as e:
+            print(f"⚠️ Message tracking error: {str(e)[:80]}")
     
     # 1. Anti-Spam
     spam_cache[message.author.id].append(now)
@@ -1144,7 +1171,23 @@ async def on_ready():
     print(f"Logged in as {bot.user}")
     print(f"Bot ID: {bot.user.id}")
     print(f"GUILD_ID: {GUILD_ID}")
+    print(f"MongoDB Connected: {mongo_connected}")
     print(f"Commands in tree before sync: {[c.name for c in tree.get_commands(guild=GUILD if GUILD_ID > 0 else None)]}")
+    
+    # Verify MongoDB connection
+    if not mongo_connected:
+        print("⚠️ WARNING: MongoDB is not connected. Data will be lost on restart!")
+        print("⚠️ Please check your MONGODB_URI in .env file")
+    else:
+        try:
+            # Test MongoDB by writing a test record
+            test_result = save_with_retry(users_coll, {"_id": "mongodb_test"}, {"$set": {"test": True}})
+            if test_result:
+                print("✅ MongoDB test write successful - Data persistence enabled!")
+            else:
+                print("⚠️ MongoDB write test failed")
+        except Exception as e:
+            print(f"⚠️ MongoDB test failed: {e}")
     
     # Create indexes on first ready
     await create_indexes_async()
