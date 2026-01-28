@@ -794,22 +794,35 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
         }}, upsert=True)
         
         # Send to TODO channel
-        guild = interaction.guild
-        if guild:
-            channel = guild.get_channel(TODO_CHANNEL_ID)
-            if channel:
-                embed = discord.Embed(title="✅ New TODO Submitted", color=discord.Color.green())
-                embed.add_field(name="👤 Submitted By", value=interaction.user.mention, inline=False)
-                embed.add_field(name="📅 Date", value=self.date.value, inline=True)
-                embed.add_field(name="📝 Name", value=self.name.value, inline=True)
-                embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
-                embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
-                embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
-                embed.set_footer(text="Status: Submitted")
-                try:
+        try:
+            # Method 1: Try using interaction.guild
+            guild = interaction.guild
+            print(f"📝 TODO Modal - Guild: {guild is not None}, Guild ID: {guild.id if guild else 'None'}")
+            
+            if guild:
+                channel = guild.get_channel(TODO_CHANNEL_ID)
+                print(f"📝 TODO Modal - Channel lookup: {channel is not None}, Channel ID wanted: {TODO_CHANNEL_ID}")
+                
+                if channel:
+                    embed = discord.Embed(title="✅ New TODO Submitted", color=discord.Color.green())
+                    embed.add_field(name="👤 Submitted By", value=interaction.user.mention, inline=False)
+                    embed.add_field(name="📅 Date", value=self.date.value, inline=True)
+                    embed.add_field(name="📝 Name", value=self.name.value, inline=True)
+                    embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
+                    embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
+                    embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
+                    embed.set_footer(text=f"Status: Submitted | User: {interaction.user.id}")
                     await channel.send(embed=embed)
-                except Exception as e:
-                    print(f"⚠️ Failed to send TODO to channel: {str(e)[:100]}")
+                    print(f"✅ TODO sent to channel {TODO_CHANNEL_ID}")
+                else:
+                    print(f"❌ Channel not found! TODO_CHANNEL_ID={TODO_CHANNEL_ID}")
+            else:
+                print(f"❌ Guild is None in TodoModal!")
+                
+        except Exception as e:
+            print(f"❌ TodoModal send error: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         await interaction.followup.send("✅ TODO submitted successfully!", ephemeral=True)
 
@@ -842,23 +855,35 @@ class AtodoModal(TodoModal):
         }}, upsert=True)
         
         # Send to TODO channel
-        guild = interaction.guild
-        if guild:
-            channel = guild.get_channel(TODO_CHANNEL_ID)
-            if channel:
-                embed = discord.Embed(title="✅ TODO Submitted (By Owner)", color=discord.Color.gold())
-                embed.add_field(name="👤 For User", value=self.target.mention, inline=False)
-                embed.add_field(name="👨‍💼 Submitted By", value=interaction.user.mention, inline=False)
-                embed.add_field(name="📅 Date", value=self.date.value, inline=True)
-                embed.add_field(name="📝 Name", value=self.name.value, inline=True)
-                embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
-                embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
-                embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
-                embed.set_footer(text="Status: Submitted by Owner")
-                try:
+        try:
+            guild = interaction.guild
+            print(f"📝 ATODO Modal - Guild: {guild is not None}, Guild ID: {guild.id if guild else 'None'}")
+            
+            if guild:
+                channel = guild.get_channel(TODO_CHANNEL_ID)
+                print(f"📝 ATODO Modal - Channel lookup: {channel is not None}, Channel ID wanted: {TODO_CHANNEL_ID}")
+                
+                if channel:
+                    embed = discord.Embed(title="✅ TODO Submitted (By Owner)", color=discord.Color.gold())
+                    embed.add_field(name="👤 For User", value=self.target.mention, inline=False)
+                    embed.add_field(name="👨‍💼 Submitted By", value=interaction.user.mention, inline=False)
+                    embed.add_field(name="📅 Date", value=self.date.value, inline=True)
+                    embed.add_field(name="📝 Name", value=self.name.value, inline=True)
+                    embed.add_field(name="✔️ Must Do", value=self.must_do.value or "N/A", inline=False)
+                    embed.add_field(name="🎯 Can Do", value=self.can_do.value or "N/A", inline=False)
+                    embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
+                    embed.set_footer(text=f"Status: Submitted by Owner | Target: {self.target.id}")
                     await channel.send(embed=embed)
-                except Exception as e:
-                    print(f"⚠️ Failed to send TODO to channel: {str(e)[:100]}")
+                    print(f"✅ ATODO sent to channel {TODO_CHANNEL_ID}")
+                else:
+                    print(f"❌ Channel not found! TODO_CHANNEL_ID={TODO_CHANNEL_ID}")
+            else:
+                print(f"❌ Guild is None in AtodoModal!")
+                
+        except Exception as e:
+            print(f"❌ AtodoModal send error: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         await interaction.followup.send(f"✅ TODO submitted for {self.target.mention}!", ephemeral=True)
 
