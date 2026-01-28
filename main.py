@@ -861,7 +861,7 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
                     "can_do": self.can_do.value or "N/A",
                     "dont_do": self.dont_do.value or "N/A"
                 }
-            }}, upsert=True)
+            }})
             print(f"✅ [TODO] Database save complete")
             
             # Create the embed
@@ -951,7 +951,7 @@ class AtodoModal(TodoModal):
                     "can_do": self.can_do.value or "N/A",
                     "dont_do": self.dont_do.value or "N/A"
                 }
-            }}, upsert=True)
+            }})
             print(f"✅ [ATODO] Database save complete")
             
             # Create the embed
