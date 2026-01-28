@@ -871,13 +871,25 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
         embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
         embed.set_footer(text=f"Status: Submitted | User: {interaction.user.id}")
         
-        # Send to channel using helper function with error handling
-        print(f"\n🔥 [TODO] About to call send_todo_to_channel...")
+        # Send to channel DIRECTLY
+        print(f"\n🔥 [TODO] Attempting direct send to channel...")
         try:
-            result = await send_todo_to_channel(embed, source="TodoModal")
-            print(f"🔥 [TODO] send_todo_to_channel returned: {result}")
+            print(f"🔥 Guild ID: {GUILD_ID}, Channel ID: {TODO_CHANNEL_ID}")
+            guild = bot.get_guild(GUILD_ID)
+            print(f"🔥 Guild lookup: {guild}")
+            if guild:
+                channel = guild.get_channel(TODO_CHANNEL_ID)
+                print(f"🔥 Channel lookup: {channel}")
+                if channel:
+                    print(f"🔥 Sending message to channel: {channel.name}...")
+                    await channel.send(embed=embed)
+                    print(f"✅✅✅ TODO SENT SUCCESSFULLY! ✅✅✅")
+                else:
+                    print(f"❌ Channel not found")
+            else:
+                print(f"❌ Guild not found")
         except Exception as e:
-            print(f"🔥 [TODO] ERROR calling send_todo_to_channel: {type(e).__name__}: {e}")
+            print(f"❌ ERROR in direct send: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
         
@@ -922,13 +934,25 @@ class AtodoModal(TodoModal):
         embed.add_field(name="❌ Don't Do", value=self.dont_do.value or "N/A", inline=False)
         embed.set_footer(text=f"Status: Submitted by Owner | Target: {self.target.id}")
         
-        # Send to channel using helper function with error handling
-        print(f"\n🔥 [ATODO] About to call send_todo_to_channel...")
+        # Send to channel DIRECTLY
+        print(f"\n🔥 [ATODO] Attempting direct send to channel...")
         try:
-            result = await send_todo_to_channel(embed, source="AtodoModal")
-            print(f"🔥 [ATODO] send_todo_to_channel returned: {result}")
+            print(f"🔥 Guild ID: {GUILD_ID}, Channel ID: {TODO_CHANNEL_ID}")
+            guild = bot.get_guild(GUILD_ID)
+            print(f"🔥 Guild lookup: {guild}")
+            if guild:
+                channel = guild.get_channel(TODO_CHANNEL_ID)
+                print(f"🔥 Channel lookup: {channel}")
+                if channel:
+                    print(f"🔥 Sending message to channel: {channel.name}...")
+                    await channel.send(embed=embed)
+                    print(f"✅✅✅ ATODO SENT SUCCESSFULLY! ✅✅✅")
+                else:
+                    print(f"❌ Channel not found")
+            else:
+                print(f"❌ Guild not found")
         except Exception as e:
-            print(f"🔥 [ATODO] ERROR calling send_todo_to_channel: {type(e).__name__}: {e}")
+            print(f"❌ ERROR in direct send: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
         
