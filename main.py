@@ -416,13 +416,41 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                     cam_timers.pop(member.id, None)
                 cam_timers[member.id] = bot.loop.create_task(enforce())
 
-# ❌ DISABLED: batch_save_study() - No more auto-saving every 2 minutes
-# Data is now saved ONLY when:
-# 1. User leaves VC
-# 2. User changes camera on/off
-# 3. User changes channels
-# 4. Midnight reset (at 00:00 IST)
-# This prevents storing duplicate/unnecessary data for members already in voice
+@tasks.loop(minutes=2)
+async def batch_save_study():
+    if GUILD_ID <= 0 or not mongo_connected:
+        return
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+    now = time.time()
+    try:
+        saved_count = 0
+        for uid, join in list(vc_join_times.items()):
+            member = guild.get_member(uid)
+            if not member or not member.voice or not member.voice.channel:
+                continue
+            mins = int((now - join) // 60)
+            if mins > 0:
+                cam = member.voice.self_video or member.voice.streaming
+                field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
+                result = save_with_retry(users_coll, {"_id": str(uid)}, {"$inc": {field: mins}})
+                if result:
+                    print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
+                    saved_count += 1
+                else:
+                    print(f"⚠️ Failed to save for {member.display_name}")
+                vc_join_times[uid] = now
+        if saved_count > 0:
+            print(f"📊 Batch save complete: Updated {saved_count} active members")
+    except Exception as e:
+        print(f"⚠️ Batch save error: {str(e)[:100]}")
+
+@batch_save_study.before_loop
+async def before_batch_save():
+    """Ensure batch save starts running from the beginning"""
+    await bot.wait_until_ready()
+    print("✅ batch_save_study loop started")
 
 # ==================== LEADERBOARDS ====================
 @tasks.loop(time=datetime.time(23, 55, tzinfo=KOLKATA))
@@ -509,7 +537,7 @@ async def lb(interaction: discord.Interaction):
         desc = "**Cam On ✅**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_on'])}" for i, u in enumerate(sorted_on, 1) if u["cam_on"] > 0) or "No data yet. Start joining voice channels!\n")
         desc += "\n**Cam Off ❌**\n" + ("\n".join(f"#{i} **{u['name']}** — {format_time(u['cam_off'])}" for i, u in enumerate(sorted_off, 1) if u["cam_off"] > 0) or "No data.")
         embed = discord.Embed(title="🏆 Study Leaderboard", description=desc, color=0xFFD700)
-        embed.set_footer(text="Data saves on: leave VC, camera change, or channel change | Resets daily at midnight IST")
+        embed.set_footer(text="Data saves every 2 minutes | Resets daily at midnight IST")
         await interaction.followup.send(embed=embed)
     except Exception as e:
         error_msg = str(e)
@@ -1205,7 +1233,7 @@ async def on_ready():
         print(f"❌ Sync failed: {e}")
         import traceback
         traceback.print_exc()
-    # batch_save_study.start()  # ❌ DISABLED - no more auto-saving every 2 minutes
+    batch_save_study.start()
     auto_leaderboard.start()
     midnight_reset.start()
     todo_checker.start()
