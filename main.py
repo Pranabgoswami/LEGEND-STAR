@@ -250,6 +250,7 @@ def safe_find_one(collection, query):
 def safe_find(collection, query=None, limit=None):
     """Safely find multiple documents"""
     if not mongo_connected or collection is None:
+        print(f"⚠️ Cannot find: mongo_connected={mongo_connected}, collection={collection is not None}")
         return []
     try:
         if query is None:
@@ -257,8 +258,11 @@ def safe_find(collection, query=None, limit=None):
         result = collection.find(query)
         if limit:
             result = result.limit(limit)
-        return list(result)
+        data = list(result)
+        print(f"✅ safe_find returned {len(data)} documents")
+        return data
     except Exception as e:
+        print(f"⚠️ safe_find error: {str(e)[:100]}")
         return []
 
 def safe_update_one(collection, query, update):
@@ -266,7 +270,7 @@ def safe_update_one(collection, query, update):
     if not mongo_connected or collection is None:
         return False
     try:
-        result = collection.update_one(query, update)
+        result = collection.update_one(query, update, upsert=True)
         if result.modified_count > 0 or result.upserted_id:
             return True
         # Document may not exist yet, that's okay
@@ -426,10 +430,16 @@ async def batch_save_study():
     now = time.time()
     try:
         saved_count = 0
+        processed = set()
+        
+        # ✅ FIRST: Save all users currently in vc_join_times (already tracked)
         for uid, join in list(vc_join_times.items()):
             member = guild.get_member(uid)
             if not member or not member.voice or not member.voice.channel:
+                # User left VC, remove from tracking
+                vc_join_times.pop(uid, None)
                 continue
+            
             mins = int((now - join) // 60)
             if mins > 0:
                 cam = member.voice.self_video or member.voice.streaming
@@ -438,11 +448,35 @@ async def batch_save_study():
                 if result:
                     print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
                     saved_count += 1
-                else:
-                    print(f"⚠️ Failed to save for {member.display_name}")
                 vc_join_times[uid] = now
+                processed.add(uid)
+        
+        # ✅ SECOND: Also save ALL members currently in any voice channel (fallback tracking)
+        # This ensures users who joined before bot started are still tracked
+        for channel in guild.voice_channels:
+            for member in channel.members:
+                if member.bot or member.id in processed:
+                    continue
+                
+                # Initialize if not in vc_join_times
+                if member.id not in vc_join_times:
+                    vc_join_times[member.id] = now
+                    mins = 0  # Just initialized, don't save time yet
+                    print(f"🔄 {member.display_name}: Registered (was not being tracked)")
+                else:
+                    mins = int((now - vc_join_times[member.id]) // 60)
+                
+                if mins > 0:
+                    cam = member.voice.self_video or member.voice.streaming
+                    field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
+                    result = save_with_retry(users_coll, {"_id": str(member.id)}, {"$inc": {field: mins}})
+                    if result:
+                        print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
+                        saved_count += 1
+                    vc_join_times[member.id] = now
+        
         if saved_count > 0:
-            print(f"📊 Batch save complete: Updated {saved_count} active members")
+            print(f"📊 Batch save complete: Updated {saved_count} active members in voice")
     except Exception as e:
         print(f"⚠️ Batch save error: {str(e)[:100]}")
 
@@ -511,12 +545,14 @@ async def lb(interaction: discord.Interaction):
         if not mongo_connected:
             return await interaction.followup.send("📡 Database temporarily unavailable. Try again in a moment.", ephemeral=True)
         
-        docs = safe_find(users_coll, {}, limit=50)
-        print(f"🔍 /lb command: Found {len(docs)} documents in MongoDB")
+        docs = safe_find(users_coll, {}, limit=100)
+        print(f"🔍 /lb command: Found {len(docs)} total documents in MongoDB")
         
         active = []
         # Use guild.members cache instead of fetching (faster)
         members_by_id = {m.id: m for m in interaction.guild.members}
+        print(f"   Guild has {len(members_by_id)} members")
+        
         for doc in docs:
             try:
                 user_id = int(doc["_id"])
@@ -526,9 +562,9 @@ async def lb(interaction: discord.Interaction):
                 data = doc.get("data", {})
                 cam_on = data.get("voice_cam_on_minutes", 0)
                 cam_off = data.get("voice_cam_off_minutes", 0)
+                print(f"   - {member.display_name}: Cam ON {cam_on}m, Cam OFF {cam_off}m")
                 if cam_on > 0 or cam_off > 0:
                     active.append({"name": member.display_name, "cam_on": cam_on, "cam_off": cam_off})
-                    print(f"   - {member.display_name}: Cam ON {cam_on}m, Cam OFF {cam_off}m")
             except (ValueError, KeyError) as e:
                 print(f"   ⚠️ Error processing doc: {e}")
                 continue
