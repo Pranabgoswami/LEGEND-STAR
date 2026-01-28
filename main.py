@@ -306,8 +306,8 @@ def save_with_retry(collection, query, update, max_retries=3):
         except Exception as e:
             print(f"⚠️ Save attempt {attempt + 1} failed: {str(e)[:80]}")
             if attempt < max_retries - 1:
-                import asyncio
-                asyncio.sleep(0.5)  # Wait before retry
+                import time
+                time.sleep(0.5)  # Wait before retry (use time.sleep, not asyncio)
     
     print(f"❌ Failed to save after {max_retries} attempts")
     return False
@@ -444,18 +444,22 @@ async def batch_save_study():
             if mins > 0:
                 cam = member.voice.self_video or member.voice.streaming
                 field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                # CRITICAL FIX: Use $setOnInsert to create document if it doesn't exist
-                result = save_with_retry(users_coll, {"_id": str(uid)}, {
-                    "$inc": {field: mins},
-                    "$setOnInsert": {
+                # FIX: Separate operations to avoid MongoDB conflict
+                # First: Create document if it doesn't exist
+                users_coll.update_one(
+                    {"_id": str(uid)},
+                    {"$setOnInsert": {
                         "data": {
                             "voice_cam_on_minutes": 0,
                             "voice_cam_off_minutes": 0,
                             "message_count": 0,
                             "yesterday": {"cam_on": 0, "cam_off": 0}
                         }
-                    }
-                })
+                    }},
+                    upsert=True
+                )
+                # Then: Increment the field
+                result = save_with_retry(users_coll, {"_id": str(uid)}, {"$inc": {field: mins}})
                 if result:
                     print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
                     saved_count += 1
@@ -480,18 +484,20 @@ async def batch_save_study():
                 if mins > 0:
                     cam = member.voice.self_video or member.voice.streaming
                     field = "data.voice_cam_on_minutes" if cam else "data.voice_cam_off_minutes"
-                    # CRITICAL FIX: Use $setOnInsert to create document if it doesn't exist
-                    result = save_with_retry(users_coll, {"_id": str(member.id)}, {
-                        "$inc": {field: mins},
-                        "$setOnInsert": {
+                    # FIX: Separate operations to avoid MongoDB conflict
+                    users_coll.update_one(
+                        {"_id": str(member.id)},
+                        {"$setOnInsert": {
                             "data": {
                                 "voice_cam_on_minutes": 0,
                                 "voice_cam_off_minutes": 0,
                                 "message_count": 0,
                                 "yesterday": {"cam_on": 0, "cam_off": 0}
                             }
-                        }
-                    })
+                        }},
+                        upsert=True
+                    )
+                    result = save_with_retry(users_coll, {"_id": str(member.id)}, {"$inc": {field: mins}})
                     if result:
                         print(f"⏱️ {member.display_name}: +{mins}m {field} (Cam: {cam}) ✅")
                         saved_count += 1
@@ -578,6 +584,10 @@ async def lb(interaction: discord.Interaction):
         
         for doc in docs:
             try:
+                # Skip the test document created during startup
+                if doc["_id"] == "mongodb_test":
+                    continue
+                    
                 user_id = int(doc["_id"])
                 member = members_by_id.get(user_id)
                 if not member:
