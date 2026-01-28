@@ -774,6 +774,8 @@ async def send_todo_to_channel(embed: discord.Embed, source: str = "TodoModal"):
     print(f"📝 [TODO SEND] Source: {source}")
     print(f"📝 [TODO SEND] Target Channel ID: {TODO_CHANNEL_ID}")
     print(f"📝 [TODO SEND] Target Guild ID: {GUILD_ID}")
+
+    sent = True
     
     if GUILD_ID <= 0:
         print(f"❌ [TODO SEND] GUILD_ID is invalid: {GUILD_ID}")
