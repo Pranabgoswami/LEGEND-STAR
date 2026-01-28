@@ -1269,16 +1269,17 @@ async def atodo(interaction: discord.Interaction, user: discord.Member):
         return await interaction.response.send_message("Owner only", ephemeral=True)
     await interaction.response.send_modal(AtodoModal(user))
 
-@tasks.loop(hours=3)
+@tasks.loop(hours=5)
 async def todo_checker():
     """
     🔥 ADVANCED TODO PING SYSTEM 🔥
     
     - Monitors all users with TODO role
-    - If user participates but doesn't share TODO in last 24 hours → PING every 3 hours
-    - Ping only happens ONCE per 3-hour cycle (not spam)
+    - If user participates but doesn't share TODO in last 24 hours → PING every 5 hours
+    - Ping only happens ONCE per 5-hour cycle (not spam)
     - Auto-reset ping timer when user shares /todo or /atodo
     - Removes role after 5 days of inactivity
+    - Starts 5 hours after bot startup (no pings on deployment)
     
     MongoDB Schema:
     {
@@ -1302,7 +1303,7 @@ async def todo_checker():
     now = time.time()
     one_day = 24 * 3600       # 24 hours
     five_days = 5 * 86400     # 5 days for role removal
-    three_hours = 3 * 3600    # 3 hours between pings
+    five_hours = 5 * 3600     # 5 hours between pings (CHANGED FROM 3)
     
     print(f"\n⏰ [TODO_CHECKER] Running advanced TODO verification @ {datetime.datetime.now(KOLKATA).strftime('%H:%M:%S')}")
     
@@ -1345,13 +1346,13 @@ async def todo_checker():
                         print(f"⚠️ Failed to remove role: {e}")
             
             # ============================================================
-            # LEVEL 2: Check for 24-hour inactivity (PING - But only once per 3 hours!)
+            # LEVEL 2: Check for 24-hour inactivity (PING - But only once per 5 hours!)
             # ============================================================
             elif elapsed_since_submit >= one_day:
-                # Check if we've already pinged in the last 3 hours
-                if elapsed_since_ping < three_hours:
+                # Check if we've already pinged in the last 5 hours
+                if elapsed_since_ping < five_hours:
                     # Already pinged recently, skip
-                    hours_until_next_ping = int((three_hours - elapsed_since_ping) / 3600) + 1
+                    hours_until_next_ping = int((five_hours - elapsed_since_ping) / 3600) + 1
                     print(f"⏭️  [TODO_CHECKER] {member.display_name} already pinged ({hours_until_next_ping}h until next)")
                     continue
                 
@@ -1384,7 +1385,7 @@ async def todo_checker():
                 )
                 channel_embed.add_field(
                     name="⚠️ Note",
-                    value="This reminder runs every 3 hours until you submit",
+                    value="This reminder runs every 5 hours until you submit",
                     inline=False
                 )
                 
@@ -1443,6 +1444,16 @@ async def todo_checker():
             print(f"⚠️ todo_checker skipped invalid UID: {doc['_id']}")
         except Exception as e:
             print(f"⚠️ todo_checker error for user {doc.get('_id', '?')}: {str(e)[:100]}")
+
+@todo_checker.before_loop
+async def before_todo_checker():
+    """
+    ⏱️ STARTUP DELAY - Wait 5 hours before first ping check
+    This prevents spam pings when bot restarts/deploys
+    """
+    print("⏰ [TODO_CHECKER] Startup delay: waiting 5 hours before first check...")
+    await asyncio.sleep(5 * 3600)  # 5 hours = 18000 seconds
+    print("✅ [TODO_CHECKER] 5-hour startup delay complete! Starting checks now.")
 
 @tree.command(name="listtodo", description="View your current todo", guild=GUILD)
 async def listtodo(interaction: discord.Interaction):
