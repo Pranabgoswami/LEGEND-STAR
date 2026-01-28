@@ -1865,31 +1865,43 @@ async def manual_sync(ctx):
 @bot.command(name="all")
 async def all_ok_command(ctx, *, status: str = None):
     """Owner only: Unlock server with !all ok"""
+    print(f"🔍 DEBUG: !all command triggered | Author: {ctx.author} ({ctx.author.id}) | Status param: '{status}' | Is Owner: {ctx.author.id == OWNER_ID}")
+    
+    # Owner check
     if ctx.author.id != OWNER_ID:
+        print(f"❌ Unauthorized access attempt by {ctx.author.id}")
         await ctx.send("❌ **UNAUTHORIZED:** Only the Owner can use this command.")
         return
     
-    # Check if the message is exactly "!all ok" or "!all ok " with extra spaces
+    # Validate syntax - must have "ok"
     if not status or status.strip().lower() != "ok":
+        print(f"❌ Invalid syntax. Received: '{status}'")
         await ctx.send("❌ **INVALID SYNTAX:** Use `!all ok` to lift lockdown.")
         return
     
+    print(f"✅ Syntax valid. Processing lockdown lift...")
+    
     global is_locked_down
+    print(f"📊 Current lockdown state: {is_locked_down}")
+    
+    # If not locked, still execute (owner force-unlock)
     if not is_locked_down:
-        await ctx.send("⚠️ **STATUS:** Server is already unlocked. No action needed.")
-        return
+        await ctx.send("⚠️ **INFO:** Server is already unlocked, but executing unlock sequence...")
     
     is_locked_down = False
+    print(f"🔓 Lockdown state set to: False")
     
     try:
         # Restore default role permissions (allow messaging and voice)
         role = ctx.guild.default_role
+        print(f"📝 Editing @everyone role permissions...")
         perms = role.permissions
         perms.send_messages = True
         perms.connect = True
         perms.speak = True
         
         await role.edit(permissions=perms, reason="Owner Command: !all ok - Lockdown Lifted")
+        print(f"✅ Role permissions updated successfully")
         
         await ctx.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
         print("🟢 Lockdown lifted by Owner.")
@@ -1902,8 +1914,8 @@ async def all_ok_command(ctx, *, status: str = None):
         })
     except Exception as e:
         is_locked_down = True  # Revert on failure
+        print(f"🔴 Error lifting lockdown: {str(e)}")
         await ctx.send(f"⚠️ **ERROR:** Failed to lift lockdown: {e}")
-        print(f"🔴 Error lifting lockdown: {e}")
 
 # ==================== STARTUP ====================
 @bot.event
