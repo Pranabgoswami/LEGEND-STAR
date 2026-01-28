@@ -1863,11 +1863,12 @@ async def manual_sync(ctx):
 
 # ==================== LOCKDOWN CONTROL ====================
 @tree.command(name="ok", description="Owner only: Unlock server from lockdown", guild=GUILD)
+@checks.has_role(ROLE_ID)
 async def ok_command(interaction: discord.Interaction):
-    """Owner only: Unlock server with /ok"""
+    """Owner only: Unlock server with /ok - Owner MUST have specified role"""
     print(f"🔍 DEBUG: /ok command triggered | Author: {interaction.user} ({interaction.user.id}) | Is Owner: {interaction.user.id == OWNER_ID}")
     
-    # Owner check FIRST (before deferring)
+    # STRICT Owner check ONLY
     if interaction.user.id != OWNER_ID:
         print(f"❌ Unauthorized access attempt by {interaction.user.id}")
         await interaction.response.send_message("❌ **UNAUTHORIZED:** Only the Owner can use this command.", ephemeral=True)
