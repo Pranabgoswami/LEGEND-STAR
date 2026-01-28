@@ -875,19 +875,37 @@ class TodoModal(discord.ui.Modal, title="Daily Todo Form"):
         print(f"\n🔥 [TODO] Attempting direct send to channel...")
         try:
             print(f"🔥 Guild ID: {GUILD_ID}, Channel ID: {TODO_CHANNEL_ID}")
+            # First try get_guild (cached)
             guild = bot.get_guild(GUILD_ID)
-            print(f"🔥 Guild lookup: {guild}")
+            print(f"🔥 get_guild result: {guild}")
+            
+            # If not cached, fetch from API
+            if not guild:
+                print(f"🔥 Guild not in cache, fetching from API...")
+                guild = await bot.fetch_guild(GUILD_ID)
+                print(f"🔥 fetch_guild result: {guild}")
+            
             if guild:
+                print(f"✅ Guild found: {guild.name}")
+                # Try get_channel first (cached)
                 channel = guild.get_channel(TODO_CHANNEL_ID)
-                print(f"🔥 Channel lookup: {channel}")
+                print(f"🔥 get_channel result: {channel}")
+                
+                # If not cached, fetch from API
+                if not channel:
+                    print(f"🔥 Channel not in cache, fetching from API...")
+                    channel = await guild.fetch_channel(TODO_CHANNEL_ID)
+                    print(f"🔥 fetch_channel result: {channel}")
+                
                 if channel:
-                    print(f"🔥 Sending message to channel: {channel.name}...")
+                    print(f"✅ Channel found: {channel.name}")
+                    print(f"🔥 Sending message to channel...")
                     await channel.send(embed=embed)
                     print(f"✅✅✅ TODO SENT SUCCESSFULLY! ✅✅✅")
                 else:
-                    print(f"❌ Channel not found")
+                    print(f"❌ Channel not found after fetch")
             else:
-                print(f"❌ Guild not found")
+                print(f"❌ Guild not found after fetch")
         except Exception as e:
             print(f"❌ ERROR in direct send: {type(e).__name__}: {e}")
             import traceback
@@ -938,19 +956,37 @@ class AtodoModal(TodoModal):
         print(f"\n🔥 [ATODO] Attempting direct send to channel...")
         try:
             print(f"🔥 Guild ID: {GUILD_ID}, Channel ID: {TODO_CHANNEL_ID}")
+            # First try get_guild (cached)
             guild = bot.get_guild(GUILD_ID)
-            print(f"🔥 Guild lookup: {guild}")
+            print(f"🔥 get_guild result: {guild}")
+            
+            # If not cached, fetch from API
+            if not guild:
+                print(f"🔥 Guild not in cache, fetching from API...")
+                guild = await bot.fetch_guild(GUILD_ID)
+                print(f"🔥 fetch_guild result: {guild}")
+            
             if guild:
+                print(f"✅ Guild found: {guild.name}")
+                # Try get_channel first (cached)
                 channel = guild.get_channel(TODO_CHANNEL_ID)
-                print(f"🔥 Channel lookup: {channel}")
+                print(f"🔥 get_channel result: {channel}")
+                
+                # If not cached, fetch from API
+                if not channel:
+                    print(f"🔥 Channel not in cache, fetching from API...")
+                    channel = await guild.fetch_channel(TODO_CHANNEL_ID)
+                    print(f"🔥 fetch_channel result: {channel}")
+                
                 if channel:
-                    print(f"🔥 Sending message to channel: {channel.name}...")
+                    print(f"✅ Channel found: {channel.name}")
+                    print(f"🔥 Sending message to channel...")
                     await channel.send(embed=embed)
                     print(f"✅✅✅ ATODO SENT SUCCESSFULLY! ✅✅✅")
                 else:
-                    print(f"❌ Channel not found")
+                    print(f"❌ Channel not found after fetch")
             else:
-                print(f"❌ Guild not found")
+                print(f"❌ Guild not found after fetch")
         except Exception as e:
             print(f"❌ ERROR in direct send: {type(e).__name__}: {e}")
             import traceback
