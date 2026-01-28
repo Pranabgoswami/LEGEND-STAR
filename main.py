@@ -84,6 +84,18 @@ MAX_MENTIONS = 5
 TIMEOUT_DURATION = 60
 STRIKE_RESET = 300
 
+# Enhanced Security Settings
+FORBIDDEN_KEYWORDS = ["@everyone", "@here", "free nitro", "steam community", "gift", "airdrop", "maa", "rand", "chut"]
+
+# 🛡️ TRUSTED LISTS (Whitelist for Strike System)
+TRUSTED_USERS = [OWNER_ID]
+TRUSTED_BOTS = WHITELISTED_BOTS.copy()
+TEMP_VOICE_BOT_ID = 762217899355013120
+
+# 📒 STRIKE DATABASE (2-Strike System for Human Errors)
+offense_history = {}  # {user_id: timestamp_of_last_offense}
+is_locked_down = False  # Global lockdown state
+
 # Security settings
 DANGEROUS_EXTS = {'.exe', '.bat', '.cmd', '.msi', '.apk', '.jar', '.vbs', '.scr', '.ps1', '.hta'}
 RAID_THRESHOLD = 5
@@ -237,7 +249,115 @@ def init_mongo():
 # Initialize MongoDB on startup
 mongo_connected = init_mongo()
 
+# ====================================================
+# 🚨 ALERT SYSTEM (DM OWNER)
+# ====================================================
+async def alert_owner(guild, title, field_data):
+    """Send security alert to owner via DM"""
+    try:
+        user = await bot.fetch_user(OWNER_ID)
+        embed = discord.Embed(
+            title=f"🚨 SECURITY ALERT: {title}",
+            color=discord.Color.red(),
+            timestamp=datetime.datetime.now()
+        )
+        embed.add_field(name="Server", value=guild.name if guild else "Unknown", inline=True)
+        for key, value in field_data.items():
+            embed.add_field(name=key, value=value, inline=False)
+        await user.send(embed=embed)
+    except Exception as e:
+        print(f"⚠️ Failed to alert owner: {e}")
+
+# ====================================================
+# 🧠 INTELLIGENT PUNISHMENT SYSTEM (The Brain)
+# ====================================================
+async def punish_human(message, reason):
+    """
+    Decides whether to Timeout (1st time) or Ban (2nd time).
+    Uses intelligent strike system for human mistakes.
+    """
+    user = message.author
+    user_id = user.id
+    now = datetime.datetime.now().timestamp()
+
+    # 1. Initialize User Cache
+    if user_id not in strike_cache:
+        strike_cache[user_id] = []
+
+    # 2. Clean old strikes (older than 5 minutes)
+    strike_cache[user_id] = [t for t in strike_cache[user_id] if now - t < STRIKE_RESET]
+
+    # 3. Add new strike
+    strike_cache[user_id].append(now)
+    strike_count = len(strike_cache[user_id])
+
+    # --- EXECUTE JUDGMENT ---
+    if strike_count == 1:
+        # FIRST OFFENSE -> TIMEOUT (1 Minute)
+        try:
+            duration = datetime.timedelta(seconds=TIMEOUT_DURATION)
+            await user.timeout(duration, reason=f"Warning: {reason}")
+            await message.channel.send(f"⚠️ **Warning**: {user.mention} Put in Time-out for 1 min. (Reason: {reason})\n*Next violation in 5 mins = INSTANT BAN.*")
+        except discord.Forbidden:
+            await message.channel.send("❌ I tried to timeout this user, but my role is too low.")
+
+    elif strike_count >= 2:
+        # SECOND OFFENSE -> PERMANENT BAN
+        try:
+            await user.ban(reason=f"2nd Strike (Banned): {reason}")
+            await message.channel.send(f"🔨 **JUDGMENT**: {user.mention} has been **BANNED** for breaking rules twice in 5 mins.")
+            del strike_cache[user_id]  # Clear cache after ban
+        except discord.Forbidden:
+            await message.channel.send("❌ I tried to ban this user, but my role is too low.")
+
+# ====================================================
+# 🔒 LOCKDOWN & RECOVERY SYSTEM
+# ====================================================
+async def engage_lockdown(guild, reason):
+    """Freezes the server - disables messaging and voice"""
+    global is_locked_down
+    if is_locked_down:
+        return
+    is_locked_down = True
+
+    role = guild.default_role
+    perms = role.permissions
+    perms.send_messages = False
+    perms.connect = False
+    
+    try:
+        await role.edit(permissions=perms, reason=f"LOCKDOWN: {reason}")
+        print(f"❄️ SERVER FROZEN. Reason: {reason}")
+        
+        # Alert owner
+        await alert_owner(guild, "SERVER LOCKDOWN ACTIVATED", {
+            "Reason": reason,
+            "Status": "Server is now in LOCKDOWN mode",
+            "Action": "Use !all ok to unlock"
+        })
+    except Exception as e:
+        print(f"⚠️ Lockdown Error: {e}")
+
+async def restore_channel(guild, channel_name, category_id, channel_type):
+    """Auto-recovers a deleted channel"""
+    try:
+        category = discord.utils.get(guild.categories, id=category_id) if category_id else None
+        if str(channel_type) == 'text':
+            new_channel = await guild.create_text_channel(channel_name, category=category, reason="Anti-Nuke Auto-Recovery")
+        elif str(channel_type) == 'voice':
+            new_channel = await guild.create_voice_channel(channel_name, category=category, reason="Anti-Nuke Auto-Recovery")
+        else:
+            return
+        
+        print(f"✅ Restored channel: {channel_name}")
+        if hasattr(new_channel, 'send'):
+            await new_channel.send(f"✅ **System Restored:** This channel was recovered by anti-nuke system.")
+    except Exception as e:
+        print(f"⚠️ Channel restoration error: {e}")
+
 # Safe wrapper functions for MongoDB operations
+
+
 def safe_find_one(collection, query):
     """Safely query MongoDB"""
     if not mongo_connected or collection is None:
@@ -361,6 +481,35 @@ def track_activity(user_id: int, action: str):
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     if member.guild.id != GUILD_ID or member.bot:
         return
+    
+    # =======================================
+    # 🔊 VC SPAM SENSOR (Enhanced Hopping)
+    # =======================================
+    if member.id not in TRUSTED_USERS and before.channel != after.channel:
+        now = datetime.datetime.now()
+        if member.id not in vc_cache:
+            vc_cache[member.id] = []
+        
+        # Clean old timestamps (older than 5 seconds)
+        vc_cache[member.id] = [t for t in vc_cache[member.id] if (now - t).total_seconds() < 5]
+        vc_cache[member.id].append(now)
+        
+        # If more than 3 joins/leaves in 5 seconds -> VC hopping detected
+        if len(vc_cache[member.id]) > 3:
+            print(f"⚠️ VC HOPPING DETECTED: {member.name} ({len(vc_cache[member.id])} actions in 5s)")
+            # This would be a human error, trigger strike system
+            # For now, just timeout them
+            try:
+                await member.timeout(timedelta(minutes=5), reason="VC Join/Leave Spam (Hopping)")
+                await alert_owner(member.guild, "VC HOPPING SPAM", {
+                    "User": f"{member.mention}",
+                    "Actions": f"{len(vc_cache[member.id])} in 5 seconds",
+                    "Action": "5-minute timeout"
+                })
+            except Exception as e:
+                print(f"⚠️ Failed to timeout VC hopper: {e}")
+            return
+    
     user_id = str(member.id)
     now = time.time()
     old_in = bool(before.channel)
@@ -1434,6 +1583,50 @@ async def on_message(message: discord.Message):
         return
     now = time.time()
     
+    # ---------------------------------------------------------
+    # ☠️ ZONE 1: HACKER THREATS (INSTANT BAN - NO STRIKES)
+    # ---------------------------------------------------------
+    
+    # A. GHOST WEBHOOK DESTROYER
+    if message.webhook_id:
+        SUSPICIOUS_WORDS = ["free nitro", "steam", "gift", "airdrop", "@everyone", "@here", "maa", "rand", "chut"]
+        link_regex = r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
+        
+        is_threat = (
+            message.mention_everyone or 
+            re.search(link_regex, message.content) or 
+            any(bad_word in message.content.lower() for bad_word in SUSPICIOUS_WORDS)
+        )
+
+        if is_threat:
+            try:
+                await message.delete()
+                webhooks = await message.channel.webhooks()
+                for webhook in webhooks:
+                    if webhook.id == message.webhook_id:
+                        await webhook.delete(reason="LegendMeta: Malicious Ghost Webhook Activity")
+                        await message.channel.send("☠️ **LegendMeta**: Unauthorized Ghost Webhook DESTROYED.")
+            except Exception as e:
+                print(f"Webhook cleanup error: {e}")
+            return # STOP HERE
+
+    # IMMUNITY CHECK
+    if message.author.id == OWNER_ID or message.author == bot.user:
+        return
+
+    # B. MALWARE UPLOAD (.exe) -> INSTANT BAN
+    if message.attachments:
+        for attachment in message.attachments:
+            filename = attachment.filename.lower()
+            if filename.endswith(('.exe', '.scr', '.bat', '.cmd', '.msi', '.vbs', '.js', '.apk', '.jar')):
+                try:
+                    await message.delete()
+                    await message.author.ban(reason="LegendMeta: Malware Upload Detected")
+                    await message.channel.send(f"☣️ **Security Alert**: {message.author.mention} was BANNED for uploading a dangerous file (`{filename}`).")
+                    return 
+                except Exception as e:
+                    print(f"Failed to ban file uploader: {e}")
+    
     # Track message activity in MongoDB - SAVE IMMEDIATELY
     if message.guild and message.guild.id == GUILD_ID:
         user_id = str(message.author.id)
@@ -1448,45 +1641,34 @@ async def on_message(message: discord.Message):
         except Exception as e:
             print(f"⚠️ Message tracking error: {str(e)[:80]}")
     
+    # ---------------------------------------------------------
+    # ⚠️ ZONE 2: HUMAN MISTAKES (STRIKE SYSTEM)
+    # ---------------------------------------------------------
+
+    # C. MASS MENTION (Strike System)
+    total_mentions = len(message.mentions) + len(message.role_mentions)
+    if message.mention_everyone: total_mentions += 1
+
+    if total_mentions >= MAX_MENTIONS:
+        await message.delete()
+        await punish_human(message, "Mass Mentioning") # -> Calls the Brain
+        return
+    
     # 1. Anti-Spam
     spam_cache[message.author.id].append(now)
     spam_cache[message.author.id] = [t for t in spam_cache[message.author.id] if now - t < SPAM_WINDOW]
     if len(spam_cache[message.author.id]) > SPAM_THRESHOLD:
-        await message.delete()
-        await message.channel.send(f"{message.author.mention} Stop spamming!", delete_after=3)
-        strike_cache[message.author.id].append(now)
-        strike_cache[message.author.id] = [t for t in strike_cache[message.author.id] if now - t < STRIKE_RESET]
-        if len(strike_cache[message.author.id]) >= 3:
-            try:
-                await message.author.timeout(timedelta(seconds=TIMEOUT_DURATION), reason="Spam strikes")
-            except:
-                pass
+        del spam_cache[message.author.id] # Clear to prevent double strike
+        await punish_human(message, "Excessive Spamming") # -> Calls the Brain
         return
-    # 2. Anti-Ping
-    if message.mention_everyone or len(message.role_mentions) > 0 or len(message.mentions) > MAX_MENTIONS:
+    
+    # D. ANTI-ADVERTISEMENT (Strike System)
+    invite_regex = r"(https?://)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com/invite)/.+"
+    if re.search(invite_regex, message.content, re.IGNORECASE):
         await message.delete()
-        await message.channel.send(f"{message.author.mention} No mass mentions!", delete_after=3)
-        strike_cache[message.author.id].append(now)
-        strike_cache[message.author.id] = [t for t in strike_cache[message.author.id] if now - t < STRIKE_RESET]
-        if len(strike_cache[message.author.id]) >= 3:
-            try:
-                await message.author.timeout(timedelta(seconds=TIMEOUT_DURATION), reason="Mention abuse")
-            except:
-                pass
+        await punish_human(message, "Advertising") # -> Calls the Brain
         return
-    # 7. Malware Protection
-    for att in message.attachments:
-        ext = os.path.splitext(att.filename)[1].lower()
-        if ext in DANGEROUS_EXTS:
-            await message.delete()
-            await message.channel.send(f"{message.author.mention} Dangerous file blocked!", delete_after=3)
-            strike_cache[message.author.id].append(now)
-            if len(strike_cache[message.author.id]) >= 3:
-                try:
-                    await message.author.timeout(timedelta(seconds=TIMEOUT_DURATION), reason="Malware attempt")
-                except:
-                    pass
-            return
+    
     # Forward DMs
     if isinstance(message.channel, discord.DMChannel) and message.author.id != OWNER_ID:
         tech_channel = bot.get_channel(TECH_CHANNEL_ID)
@@ -1510,20 +1692,56 @@ async def clean_webhooks():
                 await wh.delete(reason="Unauthorized webhook")
 
 @bot.event
+async def on_webhooks_update(channel):
+    """
+    Detects creation of webhooks in REAL TIME.
+    """
+    try:
+        async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.webhook_create):
+            if entry.user.id != OWNER_ID and entry.user.id != bot.user.id:
+                # 1. DELETE THE WEBHOOK
+                webhooks = await channel.webhooks()
+                for webhook in webhooks:
+                    if webhook.id == entry.target.id:
+                        await webhook.delete(reason="LegendMeta: Unauthorized Creation")
+                
+                # 2. BAN THE CREATOR (Hacker/Rogue Admin -> INSTANT BAN)
+                try:
+                    await entry.user.ban(reason="LegendMeta: Malicious Webhook Creation")
+                    await channel.send(f"⚔️ **THREAT ELIMINATED**: Banned {entry.user.mention} for creating a webhook.")
+                except:
+                    await channel.send(f"⚠️ Webhook deleted, but could not ban user {entry.user.name}")
+    except Exception:
+        pass
+
+@bot.event
 async def on_guild_channel_delete(channel):
     if channel.guild.id != GUILD_ID:
         return
     async for entry in channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
         actor = entry.user
-        if actor.id == OWNER_ID or actor == bot.user:
+        # IMMUNITY: Owner and Bot are trusted
+        if actor.id == OWNER_ID or actor == bot.user or actor.id in TRUSTED_USERS:
             return
+        
+        # CRITICAL THREAT: Channel deletion = Instant Ban
         try:
-            await channel.guild.ban(actor, reason="Channel delete nuke")
+            await channel.guild.ban(actor, reason=f"Anti-Nuke: Channel Deletion")
             tech_channel = bot.get_channel(TECH_CHANNEL_ID)
             if tech_channel:
-                await tech_channel.send(f"Banned {actor} for deleting {channel.name}")
-        except:
-            pass
+                await tech_channel.send(f"🔨 BANNED {actor.mention} for deleting {channel.name}")
+            
+            # Alert owner
+            await alert_owner(channel.guild, "CHANNEL DELETION DETECTED", {
+                "Attacker": f"{actor.name} (ID: {actor.id})",
+                "Channel": channel.name,
+                "Action": "Instant Ban"
+            })
+        except discord.Forbidden:
+            print(f"⚠️ FAILED TO BAN channel deleter. Engaging emergency lockdown.")
+            await engage_lockdown(channel.guild, "Failed to ban channel deleter - role hierarchy issue")
+        except Exception as e:
+            print(f"⚠️ Channel delete error: {e}")
 
 @bot.event
 async def on_guild_role_delete(role):
@@ -1531,15 +1749,28 @@ async def on_guild_role_delete(role):
         return
     async for entry in role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
         actor = entry.user
-        if actor.id == OWNER_ID or actor == bot.user:
+        # IMMUNITY: Owner and Bot are trusted
+        if actor.id == OWNER_ID or actor == bot.user or actor.id in TRUSTED_USERS:
             return
+        
+        # CRITICAL THREAT: Role deletion = Instant Ban
         try:
-            await role.guild.ban(actor, reason="Role delete nuke")
+            await role.guild.ban(actor, reason=f"Anti-Nuke: Role Deletion")
             tech_channel = bot.get_channel(TECH_CHANNEL_ID)
             if tech_channel:
-                await tech_channel.send(f"Banned {actor} for deleting {role.name}")
-        except:
-            pass
+                await tech_channel.send(f"🔨 BANNED {actor.mention} for deleting {role.name}")
+            
+            # Alert owner
+            await alert_owner(role.guild, "ROLE DELETION DETECTED", {
+                "Attacker": f"{actor.name} (ID: {actor.id})",
+                "Role": role.name,
+                "Action": "Instant Ban"
+            })
+        except discord.Forbidden:
+            print(f"⚠️ FAILED TO BAN role deleter. Engaging emergency lockdown.")
+            await engage_lockdown(role.guild, "Failed to ban role deleter - role hierarchy issue")
+        except Exception as e:
+            print(f"⚠️ Role delete error: {e}")
 
 @bot.event
 async def on_member_ban(guild: discord.Guild, user: discord.User):
@@ -1547,16 +1778,26 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
         return
     async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
         actor = entry.user
-        if actor.id == OWNER_ID or actor == bot.user or user.id == actor.id:
+        # IMMUNITY: Owner, Bot, and self-bans are allowed
+        if actor.id == OWNER_ID or actor == bot.user or user.id == actor.id or actor.id in TRUSTED_USERS:
             return
+        
+        # THREAT: Unauthorized ban = Instant counter-ban + unban victim
         try:
-            await guild.ban(actor, reason="Unauthorized ban")
-            await guild.unban(user, reason="Anti-nuke")
+            await guild.ban(actor, reason=f"Anti-Nuke: Unauthorized Ban")
+            await guild.unban(user, reason="Anti-nuke recovery")
             tech_channel = bot.get_channel(TECH_CHANNEL_ID)
             if tech_channel:
-                await tech_channel.send(f"Banned {actor} for banning {user}, unbanned {user}")
-        except:
-            pass
+                await tech_channel.send(f"⚔️ BANNED {actor.mention} for banning {user.mention}, unbanned {user.mention}")
+            
+            # Alert owner
+            await alert_owner(guild, "UNAUTHORIZED BAN DETECTED", {
+                "Attacker": f"{actor.name} (ID: {actor.id})",
+                "Victim": f"{user.name}",
+                "Action": "Banned attacker, unbanned victim"
+            })
+        except Exception as e:
+            print(f"⚠️ Member ban error: {e}")
 
 @tasks.loop(minutes=1)
 async def monitor_audit():
@@ -1612,6 +1853,36 @@ async def manual_sync(ctx):
         await ctx.send(f"Synced {len(synced)} commands: {[c.name for c in synced]}")
     except Exception as e:
         await ctx.send(f"Sync failed: {e}")
+
+# ==================== LOCKDOWN CONTROL ====================
+@bot.command(name="all")
+async def all_ok_command(ctx, status: str = None):
+    """Owner only: Unlock server with !all ok"""
+    if ctx.author.id != OWNER_ID:
+        return
+    
+    if status and status.lower() == "ok":
+        global is_locked_down
+        is_locked_down = False
+        
+        role = ctx.guild.default_role
+        perms = role.permissions
+        perms.send_messages = True
+        perms.connect = True
+        
+        try:
+            await role.edit(permissions=perms, reason="Owner Command: !all ok")
+            await ctx.send("✅ **STATUS GREEN:** Lockdown lifted. Server is back to normal.")
+            print("🟢 Lockdown lifted by Owner.")
+            
+            # Alert all admins
+            await alert_owner(ctx.guild, "LOCKDOWN LIFTED", {
+                "Status": "Server is now UNLOCKED",
+                "Action": "Performed by Owner",
+                "Time": datetime.datetime.now().strftime("%H:%M:%S")
+            })
+        except Exception as e:
+            await ctx.send(f"⚠️ Error unlocking: {e}")
 
 # ==================== STARTUP ====================
 @bot.event
